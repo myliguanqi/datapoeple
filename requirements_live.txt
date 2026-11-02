@@ -1,0 +1,37 @@
+# ---- 直播服务层（主进程，mock 模式只需要这一段）----
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart
+pydantic>=2
+pyyaml
+numpy
+opencv-python
+loguru
+edge-tts>=6.1
+
+# ---- 真实模型推理（worker 进程）----
+# Windows 上不要直接 pip install -r requirements.txt：xfuser / nvidia-nccl-cu12 是 Linux 多卡用的，
+# 框架已对 xfuser 做了兼容桩。先装 PyTorch：
+#   pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
+# diffusers>=0.36 要求 huggingface-hub>=1.x，与 transformers==4.57.3（要求 hub<1.0）冲突，import 会失败
+diffusers>=0.34.0,<0.36
+huggingface-hub<1.0
+transformers==4.57.3
+protobuf>=3.11,<4          # mediapipe 0.10.9 的要求
+tokenizers>=0.20.3
+accelerate>=1.8.1
+safetensors
+einops
+easydict
+ftfy
+imageio
+imageio-ffmpeg
+scikit-image
+pyloudnorm
+librosa
+mediapipe==0.10.9
+
+# ---- 可选加速（Windows 需要找对应 Python/CUDA/torch 版本的社区 wheel）----
+# triton-windows        -> 启用 torch.compile（models.compile: auto 会自动检测）
+# flash-attn            -> Windows wheel 见 README_LIVE.md
+# sageattention         -> Windows wheel 见 README_LIVE.md

@@ -1,0 +1,55 @@
+# 正式配置：Windows + 双 RTX 4090。没列出的项使用 live/config.py 里的 DEFAULTS。
+# 相对路径都相对项目根目录（SoulX-FlashHead/）。
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  data_dir: live_data
+  ffmpeg: ffmpeg            # 不在 PATH 里就写完整路径，例如 D:/ffmpeg/bin/ffmpeg.exe
+
+models:
+  backend: flashhead
+  ckpt_dir: models/SoulX-FlashHead-1_3B
+  wav2vec_dir: models/wav2vec2-base-960h
+  default_model: lite
+  preload: [lite, pro]      # 两个都预加载，直播中 lite/pro 秒切；显存 24G 足够
+  compile: auto             # 装了 triton-windows 才会启用 torch.compile
+  warmup: true
+  sample_steps:
+    lite: 4
+    pro: 4                  # Pro 单卡跟不上实时可改 2（官方蒸馏模型支持 2 步）
+
+gpu:
+  devices: [0, 1]           # 每张卡一个 worker 进程
+  mode: multi_instance      # Windows 只能用这个；sequence_parallel 未实现
+  live_devices: [0]         # 直播放 0 号卡
+  offline_devices: [1]      # 离线视频放 1 号卡，互不抢算力
+  stagger_start: true       # 内存只有 12G，两张卡逐个加载
+
+live:
+  fps: 25
+  auto_start: true
+  default_avatar: examples/girl.png
+  seed: 9999
+  use_face_crop: false
+  safety_factor: 1.3
+  margin_s: 0.15
+  max_ahead_chunks: 2
+  interrupt_drop_queued: false
+
+speech:
+  target_rms_db: -20
+  fade_ms: 15
+  sentence_gap_ms: 120
+
+idle:
+  mode: noise               # noise | zeros | file
+  noise_db: -55
+  # file: assets/idle_breath.wav   # 换成真人呼吸/环境底噪录音，空闲动作会更自然
+
+stream:
+  jpeg_quality: 85
+
+tts:
+  engine: edge              # edge | http | mock
+  voice: zh-CN-XiaoxiaoNeural

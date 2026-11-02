@@ -9,3 +9,5 @@ gradio_results/
 gradio_results_multigpu/
 models/
 tools/
+# live server
+live_data/
