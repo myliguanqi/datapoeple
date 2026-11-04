@@ -28,6 +28,7 @@ SoulX-FlashHead（官方 1.3B 数字人模型，Lite/Pro）+ 自研的**实时�
 ```bat
 python live_server.py --config live/configs/mock.yaml     :: 无模型、无显卡调试（mock 推理 + mock TTS）
 python tests/live/test_e2e_mock.py                        :: 端到端 33 项（需先起上面的服务，端口 8000，或设 LIVE_BASE）
+python tests/live/test_e2e_commerce.py                    :: 带货全链路 16 项（同上，先起服务）
 python tests/live/test_runner_logic.py                    :: 真实推理后端逻辑 18 项（需 torch+CUDA，不需要权重）
 ```
 新增的单元/集成测试用 pytest：`python -m pytest tests/live -q`。

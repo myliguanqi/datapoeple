@@ -4,6 +4,7 @@
 - 建档门槛：只有**发过弹幕 / 送过礼（结算后的）/ 关注过 / 加粉丝团**的观众才首次入库；纯进房不建档（已建档的老观众进房照常累计 visits）；
 - known_before：本进程启动前就在库里的人才算"往场认识的"——金主 / 熟客只认上几场记住的人，本场新人下一场才升级；
 - 点赞事件常常没有 user_id → 不入库；
+- 模拟注入 / mock 源 / 回放的事件默认不入库（interaction.memory.record_test_events 可打开）；
 - 落盘节流（interaction.memory.flush_interval_s）+ 临时文件原子替换；退出时 flush。
 只存：user_id、昵称、性别、财富等级（最高）、粉丝团等级、进场/送礼/发言统计、最近互动时间、最近一次提问。
 **头像、城市、签名等不落盘**（隐私）。Web「弹幕互动 → 观众」可删除某位观众的记录。
@@ -21,6 +22,7 @@ from live.core.clock import SYSTEM_CLOCK, Clock
 from live.core.events import LiveEvent
 
 _CREATE_TYPES = ("chat", "gift", "follow", "fansclub")
+TEST_PLATFORMS = ("mock", "simulate", "replay")
 
 
 class ViewerMemory:
@@ -46,6 +48,8 @@ class ViewerMemory:
     def record(self, ev: LiveEvent) -> None:
         if not self.enabled or ev.user is None or not ev.user.user_id:
             return
+        if ev.platform in TEST_PLATFORMS and not self.cfg["interaction"]["memory"].get("record_test_events"):
+            return                                       # 测试来源不污染真实观众画像
         if ev.type == "gift" and ev.data.get("is_final") is False:
             return                                       # 连击中的包不算，等结算那条
         uid = ev.user.user_id

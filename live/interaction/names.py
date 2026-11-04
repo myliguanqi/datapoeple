@@ -3,6 +3,7 @@
   short_name("诗江传媒…王少", "male") → "王少哥"（剥机构前缀，叫人不叫机构）
   short_name("多次婉拒砂糖桔", "female") → "多次姐"（取前两个汉字 + 后缀）
   short_name("六哥牛杂", "male") → "六哥"（已自带称呼尾不再加）
+  short_name("王阿姨", "female") → "王阿姨"（三个字以内、本身以称呼字结尾的原样叫）
   short_name("用户12345") → "用户"+后缀；纯英文/数字昵称同理
 后缀与尊称来自设置 persona.honorific / persona.big_honorific，可按需改。
 """
@@ -43,6 +44,8 @@ def short_name(name, gender: str | None = "unknown", suffixes: dict | None = Non
     han = _HAN.findall(person_part(name))
     if name.startswith("用户") or not han:
         return "用户" + suffix if name else "这位朋友"
+    if len(han) <= 3 and han[-1] in _ADDRESS_TAIL:
+        return "".join(han)                 # 本身就是称呼：王阿姨、李姐、张大哥
     core = "".join(han[:2])
     if core[-1] in _ADDRESS_TAIL:
         return core

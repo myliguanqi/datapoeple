@@ -61,11 +61,36 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | PUT | `/api/danmaku/cookie` | `{cookie}` | 保存抖音登录 cookie（支持整条 curl / `cookie:` 请求头 / `k=v; k=v`），**只写不读**，返回 `{configured, length, updated_at, age_days, has_sessionid}`；正在连抖音时自动重连 |
 | DELETE | `/api/danmaku/cookie` | | 删除本机保存的 cookie |
 
+## 互动与主持人
+
+| 方法 | 路径 | 请求 | 说明 |
+|---|---|---|---|
+| GET | `/api/interaction/triggers` | | 生效中的触发器表（出厂 + 覆盖），按优先级从高到低：`{name, when, priority, emotion, target_energy, cooldown_s, max_stale_s, use_llm, role, merge_clause, merge_with, directive, lines, enabled, overridden:[改过的字段], default:{出厂值}, last_fired}` |
+| PUT | `/api/interaction/triggers/{name}` | `{enabled?, priority?, cooldown_s?, emotion?, target_energy?, directive?, lines?, max_stale_s?, use_llm?}` | 修改一个触发器（写入设置 `interaction.triggers`，立即生效、可在设置历史里回滚）；未知触发器 404，priority 不在 0~100 时 400 |
+| POST | `/api/interaction/triggers/{name}/reset` | | 恢复出厂 |
+| GET | `/api/interaction/queue` | | 排队中的 cue `[{id, event, priority, kind, waited_s, stale_s, text, reason}]` |
+| GET | `/api/interaction/log?limit=100` | | 决策日志（新的在前）：`{id, ts, event, kind, priority, reason, source{msg_id, nickname, content}, status(queued/composing/speaking/spoken/interrupted/dropped/failed/timeout/empty), text, text_source(template/llm/knowledge/manual/script), fallback_text, compliance_hits, compose_ms, latency_ms, request_id, duration_s, note}` |
+| POST | `/api/interaction/pause` / `resume` | | 暂停 / 恢复互动（设置 `host.pause_interaction`；暂停时清空队列） |
+| GET | `/api/host/status` | | `{enabled, session_id, session_ok, current{cue_id, event, kind, priority, reason, text, text_source, request_id, interruptible, elapsed_s}, queue[前 10 条], queue_size, pause_interaction, pause_script, script_active, script, history[最近 10 条]}` |
+| POST | `/api/host/say` | `{text, interrupt?}` | 人工插话：优先级 `host.manual_priority`（默认 90），过合规；`interrupt=true` 先打断当前播报。返回 `{cue_id, priority}` |
+| POST | `/api/host/interrupt` | | 打断主持人当前播报 |
+| POST | `/api/host/script/pause` / `resume` / `next` | | 暂停 / 恢复讲品、跳到下一段（讲品内容在 P5 接入，之前 `next` 返回 409） |
+
+## 观众（长期记忆）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/viewers?q=&limit=50` | `{stats{users, donors, known_at_boot}, items[{user_id, name, gender, visits, gift_count, gift_value, chat_count, followed, last_gift, gifts, max_wealth_level, fans_level, last_question, first_seen, last_seen, known_before}]}`，最近互动的在前 |
+| GET | `/api/viewers/{user_id}` | 一位观众的画像；没建档 404 |
+| DELETE | `/api/viewers/{user_id}` | 删除这位观众的记录 |
+
+只有发过弹幕 / 送过礼 / 关注过 / 加粉丝团的观众才建档；模拟注入、mock 源、回放的事件默认不写长期记忆（`interaction.memory.record_test_events`）。
+
 ## 控制台推送：`/ws/console`（只读）
 
 连接后先收到 `{"topic": "hello", "data": {"recent": {主题: [最近的消息…]}}}`，之后每条消息形如
-`{"topic": "settings.changed", "ts": 1730000000.0, "data": {...}}`。当前推送的主题：`settings.changed`、`env.changed`、`danmaku.status`、`live.event`
-（后续阶段加入 `interaction.cue`、`host.action` 等）。
+`{"topic": "settings.changed", "ts": 1730000000.0, "data": {...}}`。当前推送的主题：`settings.changed`、`env.changed`、`danmaku.status`、`live.event`、`interaction.cue`（`Cue.to_dict()`）、
+`host.action`（决策日志条目，字段同 `/api/interaction/log`，状态每变一次推一次）。
 
 `live.event` 推给 Web 前节流：一般事件 `data` 就是 `LiveEvent.to_dict()`；点赞合并为
 `{"type": "like_batch", "count", "events", "users": [{nickname, count}], "total", "ts"}`，普通进场合并为
@@ -84,7 +109,7 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | DELETE | `/api/sessions/{sid}` | | 关闭会话 |
 | POST | `/api/sessions/{sid}/speak` | JSON `{text, voice?, interrupt?, request_id?, speed?}` | 文本走 TTS 后说出。`interrupt=true` 先打断当前的；`speed` 语速比 0.5~2.0（不给用设置 `tts.speed`）。返回 `{request_id, queued}` |
 | POST | `/api/sessions/{sid}/audio` | multipart `file`（wav/mp3/...）, `text?`, `interrupt?` | 直接用一段音频驱动（外部 TTS / 录音）。返回 `{request_id, seg_id, seconds}` |
-| POST | `/api/sessions/{sid}/interrupt` | | 打断：清空未合成文本和未生成语音。返回 `{dropped_segments, dropped_frames}` |
+| POST | `/api/sessions/{sid}/interrupt` | | 打断：清空未合成文本和未生成语音。返回 `{dropped_segments, dropped_frames, request_ids}`（被打断的请求不会再发 speak_done） |
 | POST | `/api/sessions/{sid}/model` | JSON `{model: "lite"\|"pro"}` | 切换模型，切换完成后返回 `{model, chunk}` |
 | POST | `/api/sessions/{sid}/avatar` | multipart `file`（图片）, `use_face_crop?` | 更换形象（运动状态会重置到新图） |
 
@@ -95,7 +120,7 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
   "session_id": "default", "state": "running", "error": null,
   "model": "lite", "gpu_id": 0, "worker": 0,
   "chunk": {"chunk_frames": 24, "chunk_samples": 15360, "chunk_seconds": 0.96, "motion_frames": 9, "fps": 25, ...},
-  "speaking": true, "playing_text": "大家好，欢迎来到直播间！",
+  "speaking": true, "playing_text": "大家好，欢迎来到直播间！", "playing_request_id": "a1b2c3", "open_requests": 1,
   "buffered_s": 0.52,          // 已生成未播放
   "speech_pending_s": 3.1,     // 已合成未生成的语音
   "tts_queue": 0,              // 未开始合成的请求数
@@ -182,8 +207,8 @@ asyncio.run(main())
 | `speak_queued` | request_id, text | 文本请求入队 |
 | `segment` | seg_id, request_id, text, seconds | 一句话合成完成、进入待播 |
 | `playback` | state=start\|end, seg_id, request_id, text | 这一段开始/结束播放（服务端出帧时刻） |
-| `speak_done` | request_id | 一个请求的最后一段播完 |
-| `interrupted` | dropped_segments, dropped_frames | 被打断 |
+| `speak_done` | request_id | 一个请求的最后一段播完（追加式请求：end 之后且最后一段播完；被打断的请求不发） |
+| `interrupted` | dropped_segments, dropped_frames, request_ids | 被打断 |
 | `model_switching` / `model` | from, to / model, chunk | 开始切换 / 切换完成 |
 | `avatar` | avatar | 形象已更换 |
 | `warning` | message | 例如生成速度跟不上实时 |

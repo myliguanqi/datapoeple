@@ -60,7 +60,10 @@ def create_app(cfg: dict | None = None, *, settings: SettingsCenter | None = Non
                                  request.client.host if request.client else None)
             if denied:
                 return JSONResponse({"detail": denied[1]}, status_code=denied[0])
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/web/"):
+            response.headers["Cache-Control"] = "no-cache"     # 网页升级后浏览器不会沿用旧的 JS/CSS（有 ETag，没变化回 304）
+        return response
 
     for mod in (system, sessions, offline, settings_api, danmaku, interaction, host_api, console_ws):
         app.include_router(mod.router)

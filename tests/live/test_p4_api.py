@@ -32,6 +32,10 @@ def test_event_to_cue_to_log(make_client):
 
 def test_product_question_flow_and_memory(make_client):
     c, ctx = make_client()
+    sim(c, type="chat", nickname="路人甲", content="随便聊聊")
+    time.sleep(0.2)
+    assert c.get("/api/viewers").json()["items"] == []          # 模拟事件默认不进长期记忆
+    c.put("/api/settings", json={"changes": {"interaction.memory.record_test_events": True}})
     sim(c, type="chat", nickname="王阿姨", gender="female", content="这个保温杯多少钱")
     assert wait_for(lambda: any(x["event"] == "product_question" for x in c.get("/api/interaction/log").json()))
     v = c.get("/api/viewers", params={"q": "王阿姨"}).json()

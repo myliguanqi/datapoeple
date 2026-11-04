@@ -107,4 +107,5 @@ def test_tts_voice_hot(make_client):
 @pytest.mark.parametrize("path", ["/", "/web/app.js", "/web/style.css", "/web/player.js"])
 def test_static_pages(make_client, path):
     c, _ = make_client()
-    assert c.get(path).status_code == 200
+    r = c.get(path)
+    assert r.status_code == 200 and r.headers.get("cache-control") == "no-cache"

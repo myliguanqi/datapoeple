@@ -231,8 +231,9 @@ function startApp() {
         events.dispatchEvent(new CustomEvent('live-reset'));
       } else if (msg.topic === 'host.action' || msg.topic === 'interaction.cue') {
         const mid = msg.data && msg.data.source && msg.data.source.msg_id;      // 弹幕 → 决策结果（事件流「处理」列）
-        if (mid) {
-          app.cueResults.set(mid, msg.data);
+        const prev = mid && app.cueResults.get(mid);
+        if (mid && (!prev || prev.id === msg.data.id)) {                       // 只记第一条直接响应，回踩不覆盖
+          app.cueResults.set(mid, { status: 'queued', ...(prev || {}), ...msg.data });
           if (app.cueResults.size > 1000) app.cueResults.delete(app.cueResults.keys().next().value);
         }
       } else if (msg.topic === 'live.event') {

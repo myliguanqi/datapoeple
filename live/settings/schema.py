@@ -291,6 +291,8 @@ FIELDS += [
     F("interaction.intent.llm_classify", "bool", False, "关键词没命中时用 LLM 判意图", "多一次 LLM 调用（计费），默认关", **_IA),
     F("interaction.memory.enabled", "bool", True, "跨场长期记忆", "记住发过弹幕/送过礼/关注过的观众（金主、熟客识别）；纯进场不建档", **_IA),
     F("interaction.memory.flush_interval_s", "float", 30.0, "长期记忆落盘间隔（秒）", min=1, max=600, **_IA),
+    F("interaction.memory.record_test_events", "bool", False, "测试事件也进长期记忆",
+      "模拟注入 / mock 弹幕源 / 回放的事件默认不写长期记忆（免得假观众污染真实数据、回放重复累计）；测金主/熟客识别时临时打开", **_IA),
 
     F("host.enabled", "bool", True, "主持人开关", "关掉后数字人不自动说话（人工插话除外）", **_PS),
     F("host.session_id", "str", "default", "主持的直播会话", "主持人只控制这一路会话", **_PS),

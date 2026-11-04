@@ -12,7 +12,10 @@
 | 控制台推送（/ws/console）与节流 | `live/feed.py` |
 | 弹幕接入 | `live/danmaku/`：`base.py` 接口与注册、`manager.py` 子进程管理、`process.py` 子进程入口、`mock.py`、`replay.py`、`recorder.py`、`cookie.py`；抖音 `douyin/parse.py`（纯函数 + 连击聚合）、`douyin/adapter.py`（接管 vendor fetcher）|
 | 抖音 fetcher（第三方，原样复制，**不改**） | `vendor/douyin_fetcher/`；抖音改签名连不上时用上游 DouyinLiveWebFetcher 同名文件整体覆盖 |
-| 直播调度、空闲/说话、打断、事件 | `live/session.py` |
+| 互动规则（触发器表、话术、人设） | `live/interaction/policies/commerce.yaml`、`persona_commerce.md`（出厂值；Web 上改的写进设置覆盖） |
+| 导演 / 局面 / 长期记忆 / 队列 / 意图 / 合规 | `live/interaction/director.py`、`state.py`、`memory.py`、`queue.py`、`intent.py`、`compliance.py`；`engine.py` 串起来 |
+| 主持人（谁先说、写词、打断讲品、人工插话） | `live/host/host.py`、`composer.py`、`session_tap.py` |
+| 直播调度、空闲/说话、打断、追加式请求、事件 | `live/session.py` |
 | 空闲音频策略 | `live/idle.py` |
 | TTS | `live/tts/`：引擎（edge / http / mock / volc 火山）在 `__init__.py` 的 `TTS_ENGINES` 注册；`service.py` 回退链 + 每日上限 + 热切换；`cache.py` 合成缓存 |
 | LLM | `live/llm/`：`base.py` 接口、`openai_compat.py`、`mock.py`、`__init__.py` 的 `LLM_PROVIDERS` 注册、`service.py`（统计 / 上限 / 防复读）、`text.py`（流式按句切分） |
@@ -41,6 +44,9 @@ python -m pytest tests/live -q -m "not e2e"
 :: 1) 端到端（mock，不需要模型/显卡）：先起服务，再跑测试
 python live_server.py --config live/configs/mock.yaml
 python tests/live/test_e2e_mock.py          :: 依赖 requests websockets；33 项
+
+:: 1b) 带货全链路（同样先起 mock 服务）：模拟弹幕 → 导演 → 主持人 → 播报顺序 / 人工插话 / 暂停
+python tests/live/test_e2e_commerce.py      :: 16 项
 
 :: 2) 真实推理后端的逻辑测试（需要 torch+CUDA+官方依赖，不需要权重）
 python tests/live/test_runner_logic.py      :: 18 项
@@ -75,6 +81,30 @@ lite→pro 切换的运动帧接续、换形象、卸载保护。它**不能**�
    - 缓存了对象（客户端、文件、模型）的，实现 `apply_settings(self, settings, changed)`，在 `AppContext.start()` 里
      `self.settings.register(obj, ["前缀"])`。`changed` 只含该前缀下真正变化的 hot 键。
 3. Web 设置页自动出现这一项（标签、说明、范围、即时生效/需重启徽章都来自 schema），不用改前端。
+
+## 扩展：调互动策略 / 新增触发器
+
+大多数调整不用写代码：
+- 改优先级、冷却、话术、是否用 LLM：Web「弹幕互动 → 触发器」，或在 `policies/commerce.yaml` 改出厂值；
+- 改阈值（礼物分档、欢迎分级、点赞门槛、人数猛涨……）：Web「直播间设置 → 互动策略」；
+- 改关键词（产品提问、购买意向、垃圾弹幕）：同上 `interaction.intent.*`；改违禁词：「合规词库」。
+
+新增一个触发器（基于已有信号），在 `commerce.yaml` 加一段即可：
+
+```yaml
+gift_milestone_thanks:
+  when: gift_l                 # 已有信号，见 director.SIGNALS
+  priority: 64
+  emotion: 感激高能
+  cooldown_s: 120
+  use_llm: false
+  directive: "……给 LLM 的指令……"
+  lines:
+    - "感谢{gift_user}的{gift_count}个{gift_name}！"     # 占位符见 Director._fmt
+```
+
+新增一个**信号**：在 `RoomState`（需要新的事件窗口时）和 `Director._derive()` 里算出一个布尔值放进返回的 dict，名字加进
+`director.SIGNALS`；如果它消费某类当事事件（防重复念），在 `_CONSUMES` 里登记。用假时钟写测试，照 `tests/live/test_p4_director.py`。
 
 ## 扩展：新增弹幕平台
 
@@ -229,13 +259,14 @@ class RtmpSink(FrameSink):
 
 ## 扩展：接大模型自动回复
 
+第二阶段已内置（互动引擎 + 主持人，见 ARCHITECTURE §12）：弹幕 → 导演 → 主持人用模板或 LLM 写词 → 追加式请求逐句播报，
+`.env` 配好 `LLM_*` 即可。若要在外部系统里自己做：
+
 ```
-弹幕/评论 → LLM 生成回复文本 → POST /speak（interrupt 看业务）
+弹幕/评论 → 自己的 LLM → POST /api/host/say（走主持人：过合规、进决策日志）或 POST /api/sessions/{sid}/speak（直接说）
                                   ↑
 监听 WebSocket 的 speak_done 事件，知道上一句什么时候说完，再决定下一条
 ```
-
-`speak` 支持很长的文本（会自动切句、边合成边播），LLM 流式输出时也可以按句子多次调用 `speak`（不打断，自动排队）。
 
 ## 多卡单路加速（sequence_parallel，未实现）
 

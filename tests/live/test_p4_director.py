@@ -19,6 +19,7 @@ class Room:
 
     def __init__(self, cfg, mem_path, clock=None, memory=None, idle=False):
         self.cfg = cfg
+        cfg["interaction"]["memory"]["record_test_events"] = True   # 测试用的 mock 事件也要进长期记忆
         if not idle:                     # 冷场话术（always）会在推进时钟时插话、占用发声间隔；专门的用例再打开
             cfg["interaction"]["triggers"] = {"idle": {"enabled": False}, "idle_interact": {"enabled": False}}
         self.clock = clock or FakeClock(1_000_000.0)
@@ -81,6 +82,7 @@ def test_short_names():
     assert short_name("用户12345", "female") == "用户姐"
     assert short_name("abc", "unknown") == "用户"
     assert short_name("小王", "unknown") == "小王"
+    assert short_name("王阿姨", "female") == "王阿姨" and short_name("张大哥", "male") == "张大哥"
 
 
 def test_gift_tiers_s_m_l(room):

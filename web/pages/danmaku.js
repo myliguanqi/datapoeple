@@ -172,8 +172,8 @@ function feedTab(pane, app) {
     const d = ev.detail.data;
     const mid = d.source && d.source.msg_id;
     if (!mid) return;
-    results.set(mid, d);
-    fillResult(resultCells.get(mid), d);
+    const r = results.get(mid);                 // app.js 已按"第一条直接响应"合并好
+    if (r && r.id === d.id) fillResult(resultCells.get(mid), r);
   };
   app.events.addEventListener('topic:host.action', onAction);
   app.events.addEventListener('topic:interaction.cue', onAction);
