@@ -29,12 +29,22 @@ class EdgeTTS(TTSEngine):
         self.pitch = opts.get("pitch", "+0Hz")
         self._voices = None
 
-    def synthesize(self, text: str, voice: str | None = None) -> np.ndarray:
+    @property
+    def cache_signature(self) -> str:
+        return f"edge|{self.rate}|{self.volume}|{self.pitch}"
+
+    def _rate_for(self, speed: float) -> str:
+        if abs(float(speed) - 1.0) < 1e-3:
+            return self.rate
+        return f"{int(round((float(speed) - 1.0) * 100)):+d}%"   # 指定了语速就按语速换算（覆盖 tts.edge.rate）
+
+    def synthesize(self, text: str, voice: str | None = None, speed: float = 1.0,
+                   emotion: str | None = None) -> np.ndarray:
         import edge_tts
 
         async def _run() -> bytes:
             comm = edge_tts.Communicate(text, voice or self.default_voice,
-                                        rate=self.rate, volume=self.volume, pitch=self.pitch)
+                                        rate=self._rate_for(speed), volume=self.volume, pitch=self.pitch)
             buf = bytearray()
             async for chunk in comm.stream():
                 if chunk["type"] == "audio":

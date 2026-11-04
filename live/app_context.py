@@ -15,11 +15,13 @@ from live.config import PROJECT_ROOT
 from live.danmaku.manager import DanmakuManager
 from live.danmaku.recorder import Recorder
 from live.feed import EventFeed
+from live.llm.service import LLMService
 from live.manager import SessionManager
 from live.offline import OfflineManager
 from live.pool import WorkerPool
 from live.settings.env import Env
 from live.settings.store import SettingsCenter
+from live.core.usage import UsageMeter
 from live.tts.service import TTSService
 
 
@@ -33,7 +35,9 @@ class AppContext:
             self.env.bus = self.bus
         self.start_workers = start_workers
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.usage: UsageMeter | None = None
         self.tts: TTSService | None = None
+        self.llm: LLMService | None = None
         self.pool: WorkerPool | None = None
         self.sessions: SessionManager | None = None
         self.offline: OfflineManager | None = None
@@ -47,7 +51,11 @@ class AppContext:
         self.loop = loop
         cfg = self.cfg
         os.makedirs(os.path.join(cfg["server"]["data_dir"], "uploads"), exist_ok=True)
-        self.tts = TTSService(cfg)
+        self.usage = UsageMeter(os.path.join(cfg["server"]["data_dir"], "usage.json"))
+        self.tts = TTSService(cfg, self.env, self.usage)
+        self.llm = LLMService(cfg, self.env, self.usage)
+        self._subs.append(self.bus.subscribe("env.changed", self.tts.on_env_changed, name="tts-env"))
+        self._subs.append(self.bus.subscribe("env.changed", self.llm.on_env_changed, name="llm-env"))
         self.pool = WorkerPool(cfg)
         self.sessions = SessionManager(cfg, self.pool, self.tts, loop)
         self.offline = OfflineManager(cfg, self.pool, self.tts)
@@ -56,6 +64,7 @@ class AppContext:
         self.recorder = Recorder(cfg, self.bus)
         self._subs += [
             self.settings.register(self.tts, ["tts"], name="tts"),
+            self.settings.register(self.llm, ["llm"], name="llm"),
             self.settings.register(self.sessions, ["idle"], name="sessions"),
             self.settings.register(self.danmaku, ["danmaku"], name="danmaku"),
             self.settings.register(self.recorder, ["danmaku.record"], name="recorder"),
@@ -86,6 +95,8 @@ class AppContext:
             self.feed.close()
         if self.sessions is not None:
             self.sessions.close_all()
+        if getattr(self, "usage", None) is not None:
+            self.usage.flush()
         if self.pool is not None and self.start_workers:
             self.pool.stop()
         for s in self._subs:
@@ -100,7 +111,7 @@ class AppContext:
     def services_status(self) -> dict:
         return {
             "tts": self.tts.status() if self.tts else None,
-            "llm": None,          # P3 接入
+            "llm": self.llm.status() if self.llm else None,
             "danmaku": self.danmaku.status() if self.danmaku else None,
         }
 

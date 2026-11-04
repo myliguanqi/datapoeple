@@ -112,6 +112,7 @@ a { color: var(--accent); }
 .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; font-size: 13px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; overflow-wrap: anywhere; }
+.kv dd .badge { white-space: normal; line-height: 1.5; max-width: 100%; }
 
 input, select, textarea, button { font: inherit; color: inherit; }
 input[type=text], input[type=number], input[type=password], input[type=search], select, textarea {

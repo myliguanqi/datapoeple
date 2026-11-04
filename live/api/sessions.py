@@ -31,6 +31,7 @@ class SpeakBody(BaseModel):
     voice: str | None = None
     interrupt: bool = False
     request_id: str | None = None
+    speed: float | None = None          # 语速比（0.5~2.0）；不给用设置 tts.speed
 
 
 class ModelBody(BaseModel):
@@ -93,8 +94,9 @@ async def delete_session(request: Request, sid: str):
 @router.post("/api/sessions/{sid}/speak")
 async def speak(request: Request, sid: str, body: SpeakBody):
     try:
+        speed = None if body.speed is None else max(0.5, min(2.0, float(body.speed)))
         return get_session(request, sid).speak(body.text, voice=body.voice, interrupt=body.interrupt,
-                                               request_id=body.request_id)
+                                               request_id=body.request_id, speed=speed)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -185,7 +187,8 @@ async def ws_session(ws: WebSocket, sid: str):
                     continue
                 if t == "speak":
                     r = sess.speak(msg.get("text", ""), voice=msg.get("voice"),
-                                   interrupt=bool(msg.get("interrupt")), request_id=msg.get("request_id"))
+                                   interrupt=bool(msg.get("interrupt")), request_id=msg.get("request_id"),
+                                   speed=msg.get("speed"))
                     await ws.send_text(json.dumps({"type": "ack", "for": "speak", **r}))
                 elif t == "interrupt":
                     await ws.send_text(json.dumps({"type": "ack", "for": "interrupt", **sess.interrupt()}))

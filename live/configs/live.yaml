@@ -51,5 +51,6 @@ stream:
   jpeg_quality: 85
 
 tts:
-  engine: edge              # edge | http | mock
-  voice: zh-CN-XiaoxiaoNeural
+  engine: volc              # volc（火山声音复刻，凭证在 .env）| edge | http | mock；volc 没配凭证时按 fallback 自动回退
+  fallback: [edge, mock]
+  voice: zh-CN-XiaoxiaoNeural   # edge 音色（回退到 edge 时用）

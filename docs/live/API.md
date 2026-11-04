@@ -28,7 +28,7 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存。另含 `services`（各服务状态：`tts` `{requested, engine, available, error, calls, failures, last_ms}`，`llm`、`danmaku` 未接入时为 null）、`admin.token_set`、`settings.{version, pending_restart}` |
+| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存。另含 `services`（各服务状态）：`tts` `{requested, engine(实际在用), chain, error(首选不可用原因), warning(超每日上限等), calls, failures, fallbacks, last_ms, last_engine, last_error, cache{enabled, hits, miss, rate, mem_entries}, today_chars{引擎: 字数}, daily_max_chars}`；`llm` `{provider, model, available, reason, calls, failures, last_ms, last_ttft_ms, last_error, today_calls, daily_max_calls}`；`danmaku` 同 `/api/danmaku/status`、`admin.token_set`、`settings.{version, pending_restart}` |
 | GET | `/api/tts/voices` | `{"engine", "default", "voices": [{"id", "name"}]}` |
 
 ## 设置中心
@@ -82,7 +82,7 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | POST | `/api/sessions` | JSON `{session_id?, model?, avatar?, seed?, use_face_crop?, gpu_id?}` | 新建会话。`avatar` 是服务器上的图片路径（网页上传请建好后再调 `/avatar`）；`gpu_id` 指定显卡 |
 | GET | `/api/sessions/{sid}` | | 会话状态（见下） |
 | DELETE | `/api/sessions/{sid}` | | 关闭会话 |
-| POST | `/api/sessions/{sid}/speak` | JSON `{text, voice?, interrupt?, request_id?}` | 文本走 TTS 后说出。`interrupt=true` 先打断当前的。返回 `{request_id, queued}` |
+| POST | `/api/sessions/{sid}/speak` | JSON `{text, voice?, interrupt?, request_id?, speed?}` | 文本走 TTS 后说出。`interrupt=true` 先打断当前的；`speed` 语速比 0.5~2.0（不给用设置 `tts.speed`）。返回 `{request_id, queued}` |
 | POST | `/api/sessions/{sid}/audio` | multipart `file`（wav/mp3/...）, `text?`, `interrupt?` | 直接用一段音频驱动（外部 TTS / 录音）。返回 `{request_id, seg_id, seconds}` |
 | POST | `/api/sessions/{sid}/interrupt` | | 打断：清空未合成文本和未生成语音。返回 `{dropped_segments, dropped_frames}` |
 | POST | `/api/sessions/{sid}/model` | JSON `{model: "lite"\|"pro"}` | 切换模型，切换完成后返回 `{model, chunk}` |
@@ -195,7 +195,7 @@ asyncio.run(main())
 ### 客户端 → 服务端（可选，与 REST 等价）
 
 ```json
-{"type": "speak", "text": "...", "voice": null, "interrupt": false, "request_id": null}
+{"type": "speak", "text": "...", "voice": null, "interrupt": false, "request_id": null, "speed": null}
 {"type": "interrupt"}
 {"type": "ping", "ts": 123}
 ```

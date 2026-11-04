@@ -14,7 +14,9 @@
 | 抖音 fetcher（第三方，原样复制，**不改**） | `vendor/douyin_fetcher/`；抖音改签名连不上时用上游 DouyinLiveWebFetcher 同名文件整体覆盖 |
 | 直播调度、空闲/说话、打断、事件 | `live/session.py` |
 | 空闲音频策略 | `live/idle.py` |
-| TTS | `live/tts/`（`create_tts` 里注册） |
+| TTS | `live/tts/`：引擎（edge / http / mock / volc 火山）在 `__init__.py` 的 `TTS_ENGINES` 注册；`service.py` 回退链 + 每日上限 + 热切换；`cache.py` 合成缓存 |
+| LLM | `live/llm/`：`base.py` 接口、`openai_compat.py`、`mock.py`、`__init__.py` 的 `LLM_PROVIDERS` 注册、`service.py`（统计 / 上限 / 防复读）、`text.py`（流式按句切分） |
+| 每日计费用量 | `live/core/usage.py`（`live_data/usage.json`） |
 | 输出端（RTMP、WebRTC、虚拟摄像头……） | `live/sinks.py` 的 `FrameSink` |
 | 真实模型推理 | `live/worker/flashhead_runner.py` |
 | 显卡调度 / 多进程 RPC | `live/pool.py`、`live/worker/process.py` |
@@ -124,12 +126,40 @@ from live.audio_utils import decode_audio_bytes
 
 class MyTTS(TTSEngine):
     name = "my"
-    def synthesize(self, text: str, voice: str | None = None) -> np.ndarray:
-        audio_bytes = call_my_service(text, voice or self.default_voice)   # 任意格式
+    billable = True            # 按调用计费就设 True，受 tts.daily_max_chars 保护
+    def synthesize(self, text: str, voice: str | None = None, speed: float = 1.0,
+                   emotion: str | None = None) -> np.ndarray:
+        audio_bytes = call_my_service(text, voice or self.default_voice, speed)   # 任意格式；失败直接抛异常
         return decode_audio_bytes(audio_bytes, sr=self.sr, ffmpeg=self.ffmpeg)  # -> float32 16k
 ```
 
-再在 `live/tts/__init__.py` 的 `create_tts` 里加一个分支，配置 `tts.engine: my`。
+再在 `live/tts/__init__.py` 注册一行 `TTS_ENGINES.register("my", lambda cfg, env=None: MyTTS(cfg))`，
+并把 `"my"` 加进 schema 里 `tts.engine` / `tts.fallback` 的 choices，配置 `tts.engine: my`。
+需要密钥就在 `.env` 加键（并登记到 `live/settings/env.py` 的 `ENV_KEYS`），构造时接收 `env`，每次调用现读 `env.get(...)`。
+缓存、回退、每日上限、热切换都由 `TTSService` 统一处理，引擎里不用管。若引擎的关键参数会影响音频，覆盖 `cache_signature`。
+
+火山 TTS 手动自测（**会计费，确认后再跑**）：`python -m live.tts.volc "测试一句"`，打印 HTTP 状态、`X-Tt-Logid`、前几条原始 SSE 事件，
+音频写到 `live_data/tts_selftest.wav`。
+
+## 扩展：新增 LLM 接口
+
+```python
+# live/llm/my_llm.py
+from live.llm.base import LLMClient, LLMError
+
+class MyLLM(LLMClient):
+    name = "my"
+    def __init__(self, cfg, env):
+        self.cfg, self.env = cfg, env
+    @property
+    def unavailable_reason(self):
+        return None if self.env.get("MY_LLM_KEY") else "MY_LLM_KEY 未配置"
+    def chat(self, messages, *, stream=False, temperature=None, max_tokens=None, timeout=None, json_mode=False):
+        ...   # 非流式返回 str；流式返回逐片段的迭代器；失败抛 LLMError
+```
+
+在 `live/llm/__init__.py` 注册 `LLM_PROVIDERS.register("my", lambda cfg, env: MyLLM(cfg, env))`，schema 的 `llm.provider` choices 加 `"my"`。
+测试用 `live/llm/mock.py` 的 `MockLLM`（规则回复、延迟/超时、报错、流式分片，`calls` 记录收到的 messages）。
 大多数自建服务（GPT-SoVITS、CosyVoice、IndexTTS 的 HTTP 接口）不用写代码，直接配 `tts.engine: http`（见 `live/tts/http_tts.py` 顶部的例子）。
 
 本地 TTS 模型如果放在主进程里跑，会和 FastAPI 抢 CPU/GIL；建议单独起服务、用 http 引擎对接，或者放到第二张卡上。

@@ -92,7 +92,11 @@ python live_server.py --config live/configs/mock.yaml
 
 把 `.env.example` 复制为 `.env` 再填（`.env` 已在 `.gitignore`）。`ADMIN_TOKEN` 设了之后，所有写操作（说话、改设置、建会话……）
 都要带口令（网页会弹框要一次）；**不设则只有本机能执行写操作**，局域网里的其他电脑只能看。
-改了 `.env` 不用重启：「直播间设置 → 密钥与凭证 → 重新加载 .env」。
+改了 `.env` 不用重启：「直播间设置 → 密钥与凭证 → 重新加载 .env」（或「数字人与系统」页右上角）。
+
+- **火山 TTS**：填 `VOLC_TTS_API_KEY`、`VOLC_VOICE_TYPE`（声音复刻音色 S_xxx）、`VOLC_RESOURCE_ID`（seed-icl-2.0 等），`tts.engine: volc`。
+  没填时自动回退 edge-tts（顶栏 TTS 徽章显示「回退」）。重复的句子命中合成缓存（`live_data/cache/tts/`）不再计费。
+- **大模型**：填 `LLM_API_URL`（如 `https://api.deepseek.com/v1`）、`LLM_API_KEY`、`LLM_MODEL`。不填也能跑，台词全部走模板兜底。
 
 > mock 配置默认用 `tts.engine: mock`（不联网的合成音）。想听真人声，把 `live/configs/mock.yaml` 里改成 `edge`。
 > 推送音频、离线视频、edge-tts 需要 `ffmpeg` 在 PATH 里。
@@ -186,7 +190,9 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 | `live.max_ahead_chunks` | 2 | 最多领先播放几个块 |
 | `idle.mode` / `noise_db` / `file` | noise / -55 | 空闲音频。画面发僵先调这里 |
 | `speech.target_rms_db` | -20 | TTS 响度归一化目标。嘴张得太小就调大（如 -16），太夸张就调小 |
-| `tts.engine` | edge | edge / http / mock |
+| `tts.engine` | volc | volc（火山声音复刻，`.env` 配凭证；没配时自动按 `tts.fallback` 回退 edge → mock）/ edge / http / mock |
+| `tts.speed` / `tts.cache.*` / `tts.daily_max_chars` | 1.0 / 开 / 0 | 默认语速；合成缓存（重复句不再请求）；计费 TTS 每日字数上限（0 = 不限） |
+| `llm.*` | | 温度、max_tokens、流式、防复读条数、每日调用上限；地址/密钥/模型在 `.env` 的 `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` |
 
 ### 画面僵硬怎么调
 
@@ -221,6 +227,11 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ## 已验证 / 未验证
 
+- ✅ 第二阶段 P3（火山 TTS + 缓存、LLM 客户端）：pytest 26 项（假 SSE 响应：正常/多块/错误码/空音频/非 JSON 行、新旧控制台鉴权头、
+  speech_rate 边界、24k→16k 重采样、回退链与单句回退、每日字数上限落盘、缓存命中/换音色失效/重启后磁盘命中/失败不缓存；
+  LLM URL 规范化、非流式/流式（忽略推理内容）/按句切分、HTTP 错误/超时/空回复、无 key 不可用、.env 重载后可用、每日调用上限）。**没有访问任何真实计费接口。**
+- ⚠️ 火山 TTS 与 LLM 没有用真实凭证跑过（你说在另一个项目实测过）：首次上线请跑 `python -m live.tts.volc "测试一句"`（会计费）
+  确认 16k 采样率可用、音色正确；LLM 在「数字人与系统」页看可用性与首字耗时。
 - ✅ 第二阶段 P2（弹幕接入）：pytest 30 项（抖音 13 类消息全字段解析含隐私字段不提取、"1.2万"人数解析、自定义性别映射、连击聚合 5 例、
   子进程启动/崩溃自动重启/改设置 10 秒内热切换/停止无残留、抖音源在子进程里导入 vendor 成功、录制→回放顺序与倍速、接口与 /ws/console 节流）；
   Edge 无头验证弹幕页与控制台弹幕流（模拟源 + 快捷注入，标签显示 ♂/♀、💎财富等级、🎫粉丝团）。

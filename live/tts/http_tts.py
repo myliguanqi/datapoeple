@@ -40,7 +40,8 @@ class HttpTTS(TTSEngine):
         super().__init__(cfg)
         self.opts = cfg["tts"]["http"]
 
-    def synthesize(self, text: str, voice: str | None = None) -> np.ndarray:
+    def synthesize(self, text: str, voice: str | None = None, speed: float = 1.0,
+                   emotion: str | None = None) -> np.ndarray:
         voice = voice or self.default_voice
         o = self.opts
         url = _render(o["url"], text, voice)

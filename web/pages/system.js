@@ -22,9 +22,11 @@ export async function mount(el, app) {
   const newBtn = h('button', { type: 'button' }, '新建会话');
   const closeBtn = h('button', { type: 'button', class: 'danger' }, '关闭当前会话');
   const refreshBtn = h('button', { type: 'button', class: 'small' }, '刷新显存');
+  const reloadEnvBtn = h('button', { type: 'button', class: 'small' }, '重新加载 .env');
 
   el.append(
-    h('div', { class: 'page-head' }, h('h2', {}, '数字人与系统')),
+    h('div', { class: 'page-head' }, h('h2', {}, '数字人与系统'), h('span', { class: 'grow' }),
+      h('span', { class: 'hint' }, '改了 .env 里的密钥/地址：'), reloadEnvBtn),
     h('div', { class: 'stack' },
       svcBox,
       h('div', { class: 'grid cols-2' },
@@ -80,6 +82,11 @@ export async function mount(el, app) {
       await app.refreshSystem();
     });
   };
+  reloadEnvBtn.onclick = () => busy(reloadEnvBtn, async () => {
+    const r = await app.api.post('/api/settings/reload-env');
+    toast(r.changed.length ? `已重新加载，变化：${r.changed.join('、')}` : '已重新加载，没有变化', 'ok');
+    setTimeout(app.refreshSystem, 300);
+  });
   refreshBtn.onclick = () => busy(refreshBtn, async () => {
     const sys = await app.api.get('/api/system?refresh=true');
     renderWorkers(sys);
@@ -97,16 +104,19 @@ export async function mount(el, app) {
     svcBox.replaceChildren(
       svcCard('语音合成（TTS）', t, t && [
         ['引擎', h('span', {}, t.engine, ' ', t.engine !== t.requested ? badge(`首选 ${t.requested} 不可用`, 'warn') : badge('正常', 'ok'))],
-        ['调用 / 失败', `${t.calls} / ${t.failures}`],
-        ['最近耗时', t.last_ms != null ? `${t.last_ms} ms` : '—'],
-        ['缓存', t.cache ? `命中 ${t.cache.hits} / 未命中 ${t.cache.miss}` : '—'],
-        ['错误', t.error || t.last_error || '—'],
+        ['回退顺序', (t.chain || []).join(' → ')],
+        ['调用 / 失败 / 回退', `${t.calls} / ${t.failures} / ${t.fallbacks ?? 0}`],
+        ['最近耗时', t.last_ms != null ? `${t.last_ms} ms（${t.last_engine || ''}）` : '—'],
+        ['缓存', t.cache ? `${t.cache.enabled ? '开' : '关'} · 命中 ${t.cache.hits} / 未命中 ${t.cache.miss}` : '—'],
+        ['今日计费字数', Object.entries(t.today_chars || {}).map(([k, v]) => `${k} ${v}`).join('，') + (t.daily_max_chars ? `（上限 ${t.daily_max_chars}）` : '') || '—'],
+        ['提示', t.warning || t.error || t.last_error || '—'],
       ]),
       svcCard('大模型（LLM）', l, l && [
         ['状态', l.available ? badge('可用', 'ok') : badge(l.reason || '不可用', 'warn')],
-        ['模型', l.model || '—'],
+        ['接口 / 模型', `${l.provider} / ${l.model || '—'}`],
         ['调用 / 失败', `${l.calls} / ${l.failures}`],
-        ['最近耗时', l.last_ms != null ? `${l.last_ms} ms` : '—'],
+        ['最近耗时', l.last_ms != null ? `${l.last_ms} ms${l.last_ttft_ms != null ? `（首字 ${l.last_ttft_ms} ms）` : ''}` : '—'],
+        ['今日调用', `${l.today_calls ?? 0}${l.daily_max_calls ? ` / 上限 ${l.daily_max_calls}` : ''}`],
         ['最近错误', l.last_error || '—'],
       ]),
       svcCard('弹幕子进程', d, d && [

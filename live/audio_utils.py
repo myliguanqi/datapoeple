@@ -31,6 +31,29 @@ def write_wav(path: str, pcm: np.ndarray, sr: int = 16000) -> str:
     return path
 
 
+def pcm16_to_float(data: bytes) -> np.ndarray:
+    """裸 PCM（s16le 单声道）字节 -> float32 [-1, 1]。"""
+    n = len(data) // 2
+    return np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32) / 32768.0
+
+
+def resample(pcm: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+    """简单重采样（不依赖 scipy/ffmpeg）：降采样先做窗函数 sinc 低通防混叠，再线性插值。TTS 语音够用。"""
+    pcm = np.asarray(pcm, dtype=np.float32)
+    if src_sr == dst_sr or pcm.size == 0:
+        return pcm
+    x = pcm
+    if dst_sr < src_sr:
+        fc = 0.5 * dst_sr / src_sr * 0.95            # 截止频率（相对源采样率，周期/采样）
+        n = 63
+        t = np.arange(n) - (n - 1) / 2
+        h = 2 * fc * np.sinc(2 * fc * t) * np.hamming(n)
+        x = np.convolve(x, h / h.sum(), mode="same").astype(np.float32)
+    n_out = int(round(x.size * dst_sr / src_sr))
+    t_out = np.arange(n_out, dtype=np.float64) * (src_sr / dst_sr)
+    return np.interp(t_out, np.arange(x.size), x).astype(np.float32)
+
+
 def float_to_int16(pcm: np.ndarray) -> np.ndarray:
     return (np.clip(pcm, -1.0, 1.0) * 32767.0).astype(np.int16)
 

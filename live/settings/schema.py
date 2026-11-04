@@ -144,8 +144,8 @@ FIELDS: list[Field] = [
     F("stream.client_queue_frames", "int", 75, "客户端最大积压帧", "超出丢最旧的", min=10, max=500, **_AV),
 
     # ---- tts（现有） ----
-    F("tts.engine", "enum", "edge", "TTS 引擎", "edge 免费在线 / http 自建服务 / mock 不联网合成音",
-      choices=("edge", "http", "mock"), group="tts"),
+    F("tts.engine", "enum", "volc", "TTS 引擎", "volc 火山声音复刻（凭证在 .env）/ edge 免费在线 / http 自建服务 / mock 不联网合成音；"
+      "首选不可用时按「回退顺序」换下一个", choices=("volc", "edge", "http", "mock"), group="tts"),
     F("tts.voice", "str", "zh-CN-XiaoxiaoNeural", "默认音色（edge/http）", group="tts"),
     F("tts.max_sentence_chars", "int", 40, "单句最大字数", "超过按逗号再切", min=10, max=200, group="tts"),
     F("tts.edge.rate", "str", "+0%", "edge 语速", "如 +10%", group="tts"),
@@ -157,6 +157,35 @@ FIELDS: list[Field] = [
     F("tts.http.json", "dict", None, "http JSON 请求体", "非空时用 POST", nullable=True, group="tts"),
     F("tts.http.headers", "dict", {}, "http 请求头", group="tts"),
     F("tts.http.timeout", "int", 60, "http 超时（秒）", min=1, max=600, group="tts"),
+    # ---- 第二阶段 P3：火山 TTS、回退、缓存、语速、用量保护 ----
+    F("tts.fallback", "list", ["edge", "mock"], "回退顺序", "首选引擎不可用（没配凭证、调用失败、超出每日上限）时依次尝试",
+      item_type="str", item_choices=("volc", "edge", "http", "mock"), group="tts"),
+    F("tts.runtime_fallback", "bool", True, "单句失败时用回退引擎补上", "关掉则这一句跳过不说（音色不会中途变）", group="tts"),
+    F("tts.speed", "float", 1.0, "默认语速", "1.0 正常；火山映射到 speech_rate，edge 映射到 rate", min=0.5, max=2.0, group="tts"),
+    F("tts.volc.voice_type", "str", "", "火山音色 ID", "声音复刻音色 S_xxx；留空用 .env 的 VOLC_VOICE_TYPE", group="tts"),
+    F("tts.volc.resource_id", "str", "", "火山资源 ID", "seed-icl-1.0 / seed-icl-1.0-concurr / seed-icl-2.0；留空用 .env 或 seed-icl-2.0",
+      group="tts"),
+    F("tts.volc.sample_rate", "enum", 16000, "火山请求采样率", "数字人要 16k；⚠ 若服务端不支持 16000 改 24000（自动重采样到 16k）",
+      choices=(16000, 24000), group="tts"),
+    F("tts.volc.timeout_s", "float", 10.0, "火山合成超时（秒）", min=2, max=60, group="tts"),
+    F("tts.volc.base_url", "str", "https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse", "火山接口地址",
+      "V3 HTTP SSE 单向流式", group="tts"),
+    F("tts.cache.enabled", "bool", True, "合成缓存", "同一句话（同音色、同语速档）只合成一次，之后直接复用；换音色/引擎自动失效", group="tts"),
+    F("tts.cache.persist", "bool", True, "缓存落盘", "写到 live_data/cache/tts/，重启后仍可命中", group="tts"),
+    F("tts.cache.speed_round", "float", 0.1, "缓存语速档", "语速按这个粒度取整进缓存键（0 = 语速不进键）", min=0, max=0.5, group="tts"),
+    F("tts.cache.mem_max_entries", "int", 1024, "内存缓存条数", min=16, max=20000, group="tts"),
+    F("tts.daily_max_chars", "int", 0, "计费 TTS 每日字数上限", "0 = 不限；超过后当天改用回退引擎并在 Web 告警（防止意外烧钱）",
+      min=0, max=10_000_000, group="tts"),
+    # ---- 第二阶段 P3：大模型 ----
+    F("llm.provider", "enum", "openai", "LLM 接口类型", "openai = OpenAI 兼容 /chat/completions（地址/密钥/模型在 .env）；mock = 不联网的假回复（调试用）",
+      choices=("openai", "mock"), group="llm"),
+    F("llm.temperature", "float", 0.8, "温度", "越高越随机", min=0, max=2, group="llm"),
+    F("llm.max_tokens", "int", 400, "最大 token 数", "混合推理模型（如 deepseek-v4 系列）要留够，否则思考完正文为空", min=16, max=8192,
+      group="llm"),
+    F("llm.stream", "bool", True, "流式输出", "按句交给 TTS，降低首句延迟", group="llm"),
+    F("llm.history_size", "int", 5, "防复读记忆条数", "最近说过的几句话会告诉 LLM，避免重复", min=0, max=50, group="llm"),
+    F("llm.daily_max_calls", "int", 0, "每日调用次数上限", "0 = 不限；超过后当天全部走模板话术并在 Web 告警", min=0, max=1_000_000,
+      group="llm"),
 
     # ---- mock / offline ----
     F("mock.speed", "dict", {"lite": 0.3, "pro": 0.7}, "mock 生成速度", "生成一块耗时 = 块时长 × speed；>1 模拟显卡跟不上",

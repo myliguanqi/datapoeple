@@ -12,12 +12,13 @@ from live.tts.base import TTSEngine
 class MockTTS(TTSEngine):
     name = "mock"
 
-    def synthesize(self, text: str, voice: str | None = None) -> np.ndarray:
+    def synthesize(self, text: str, voice: str | None = None, speed: float = 1.0,
+                   emotion: str | None = None) -> np.ndarray:
         text = text.strip()
         if not text:
             return np.zeros(0, dtype=np.float32)
         cjk = sum(1 for c in text if "一" <= c <= "鿿")
-        dur = max(0.4, cjk * 0.22 + (len(text) - cjk) * 0.07)
+        dur = max(0.4, cjk * 0.22 + (len(text) - cjk) * 0.07) / max(0.5, float(speed or 1.0))
         sr = self.sr
         t = np.arange(int(dur * sr)) / sr
         seed = sum(map(ord, text)) % 1000

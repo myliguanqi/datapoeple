@@ -126,7 +126,8 @@ runner 为每个模型记录"当前装在 pipeline 上的是哪个会话"，切�
 | worker 启动失败（缺模型、CUDA 不可用） | 状态 `error`，错误原文在 `/api/system` 与网页「系统」卡片；其他 worker 正常 |
 | 单次 generate 抛异常 | 会话记 `gen_errors`，推 `error` 事件，0.5s 后重试，画面用补帧顶住 |
 | worker 进程退出 | 所有挂起的调用失败，会话置为 `error` 并停止；需要重建会话（自动重启 worker 是待办项） |
-| TTS 失败 | 跳过这一句，推 `error` 事件，后面的句子照常 |
+| TTS 失败 | `tts.runtime_fallback` 打开时用回退链里下一个可用引擎补这一句；都失败（或关了回退）才跳过这一句、推 `error` 事件，后面的句子照常 |
+| LLM 失败 / 超时 / 没配置 | 主持人写词回退到触发器的兜底话术（P4），不冷场 |
 | 客户端慢 | 每个 WebSocket 客户端最多积压 `stream.client_queue_frames` 帧，超出丢最旧的，不影响其他客户端 |
 
 ## 9. 主进程服务与解耦（第二阶段）
@@ -136,7 +137,9 @@ AppContext（live/app_context.py）
   ├─ SettingsCenter（live/settings/store.py）── 运行配置 cfg（所有模块共享同一个 dict）
   │     └─ EventBus（live/core/bus.py）  settings.changed / env.changed / live.event / …
   ├─ Env（live/settings/env.py）        .env 密钥，只给"已配置/未配置"
-  ├─ TTSService（live/tts/service.py）   内部引擎可热切换
+  ├─ TTSService（live/tts/service.py）   首选 + 回退链、合成缓存、每日字数上限、热切换
+  ├─ LLMService（live/llm/service.py）   OpenAI 兼容 / mock，统计、每日调用上限、防复读记忆
+  ├─ UsageMeter（live/core/usage.py）    每日计费用量，live_data/usage.json
   ├─ WorkerPool / SessionManager / OfflineManager（现有）
   └─ EventFeed（live/feed.py）         总线 → /ws/console（Web 控制台推送）
 ```
@@ -152,7 +155,7 @@ AppContext（live/app_context.py）
 | 主题 | 发布者 | 订阅者 |
 |---|---|---|
 | `settings.changed` | SettingsCenter | 所有 Reconfigurable、EventFeed |
-| `env.changed` | Env.reload | LLM/TTS 客户端（P3 起）、EventFeed |
+| `env.changed` | Env.reload | TTSService、LLMService（重建客户端）、EventFeed |
 | `live.event` | DanmakuManager（子进程事件 / 模拟注入） | EventFeed（节流后推 Web）、Recorder（JSONL 录制）、互动引擎与长期记忆（P4） |
 | `danmaku.status` | DanmakuManager（状态变化 + 每 5 秒） | EventFeed（Web 状态灯） |
 
@@ -232,3 +235,31 @@ PUT /api/settings {changes}
 连击中产出 `is_final=False` 的进度事件（Web 不显示）；`repeat_end=1` 或 `danmaku.combo_timeout_s`（默认 3s）没有新包时结算一次
 `is_final=True`（数量取最大值）；结算后 5 秒内同一连击的重复推送丢弃。**互动引擎只处理 `is_final=True` 的礼物。**
 单次推送的数量 = max(combo_count, repeat_count)，group_count > 1 时再乘 group_count —— ⚠ 推送规律需要上播实测核对。
+
+## 11. 语音与大模型（第二阶段 P3）
+
+### 11.1 TTS
+
+```
+LiveSession / OfflineManager ──synthesize(text, voice, speed, emotion)──▶ TTSService
+   ├─ 引擎链：tts.engine（首选）→ tts.fallback（默认 edge → mock）；首选不可用（没凭证 / 创建失败）时启动即回退，Web 顶栏标「回退」
+   ├─ 计费保护：billable 引擎（火山）超过 tts.daily_max_chars → 当天改走回退引擎并告警（UsageMeter 落盘，重启不清零）
+   ├─ 合成缓存 TTSCache：键 = sha1(引擎签名 | 音色 | 语速档 | 文本)，内存 LRU + live_data/cache/tts/*.wav；失败不缓存
+   └─ 单句失败：tts.runtime_fallback 打开时换下一个可用引擎补上（音色会变），否则跳过这一句
+```
+
+火山（`live/tts/volc.py`）：V3 HTTP SSE 单向流式声音复刻，`POST tts.volc.base_url`，请求头 `X-Api-Key`（新控制台）或
+`X-Api-App-Key` + `X-Api-Access-Key`（旧控制台）、`X-Api-Resource-Id`、`X-Api-Request-Id`；请求体
+`{user, req_params: {text, speaker, audio_params: {format: pcm, sample_rate, speech_rate}}}`。`speed → speech_rate = round((speed-1)×100)`，
+夹到 [-50, 100]；SSE 逐行 `data: {json}`，`data/audio/audio_data` 字段的 base64 拼成 PCM，`code` 不在 (0, 3000, 20000000) 的事件跳过。
+默认直接请求 16k（数字人要 16k）；⚠ 若服务端不支持把 `tts.volc.sample_rate` 改 24000，会自动重采样到 16k。凭证每次调用现读 `.env`。
+语速 `speed`：火山映射 speech_rate，edge 映射 `rate=+N%`，mock 按比例缩短时长，http 忽略。
+
+### 11.2 LLM
+
+`LLMService.chat(messages, stream=None, temperature=, max_tokens=, timeout=, json_mode=)`：`stream=None` 时按 `llm.stream`。
+`openai` 接口（`live/llm/openai_compat.py`）每次现读 `.env` 的 `LLM_API_URL`（`/v1` 或完整 `/chat/completions` 都行）、`LLM_API_KEY`、
+`LLM_MODEL`、`LLM_TIMEOUT`；流式解析 SSE `data:` 行到 `[DONE]`，推理模型的 `reasoning_content` 不进正文。
+失败抛 `LLMError`，没配置 / 超出 `llm.daily_max_calls` 抛 `LLMUnavailable`——调用方一律回退模板话术。
+`live/llm/text.py` 的 `iter_sentences()` 把流式片段按句切（句末标点；超过 40 字在逗号处断；太短的句子并到下一句），给 TTS 逐句合成以降低首句延迟。
+`note_spoken()` / `recent_lines()` 记录最近实际说出去的台词（不论来自 LLM 还是模板），写词时告诉 LLM 别复读。

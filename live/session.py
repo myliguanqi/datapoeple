@@ -39,6 +39,8 @@ class SpeakRequest:
     text: str
     voice: str | None
     epoch: int
+    speed: float | None = None          # 语速比；None = 设置里的 tts.speed
+    emotion: str | None = None          # 中间情绪标签（引擎支持才用）
 
 
 class LiveSession:
@@ -143,13 +145,13 @@ class LiveSession:
 
     # ================================================================== 对外接口（线程安全）
     def speak(self, text: str, voice: str | None = None, interrupt: bool = False,
-              request_id: str | None = None) -> dict:
+              request_id: str | None = None, speed: float | None = None, emotion: str | None = None) -> dict:
         text = (text or "").strip()
         if not text:
             raise ValueError("text 为空")
         if interrupt:
             self.interrupt()
-        req = SpeakRequest(request_id or uuid.uuid4().hex[:10], text, voice, self._epoch)
+        req = SpeakRequest(request_id or uuid.uuid4().hex[:10], text, voice, self._epoch, speed, emotion)
         self._tts_q.put(req)
         self._emit({"type": "speak_queued", "request_id": req.request_id, "text": text})
         return {"request_id": req.request_id, "queued": self._tts_q.qsize()}
@@ -263,7 +265,7 @@ class LiveSession:
                     break
                 t0 = time.time()
                 try:
-                    pcm = self.tts.synthesize(sent, req.voice)
+                    pcm = self.tts.synthesize(sent, req.voice, speed=req.speed, emotion=req.emotion)
                 except Exception as e:
                     logger.error(f"[{self.sid}] TTS 失败: {e}")
                     self._emit({"type": "error", "where": "tts", "request_id": req.request_id,

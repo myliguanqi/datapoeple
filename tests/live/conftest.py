@@ -18,6 +18,14 @@ collect_ignore = ["test_e2e_mock.py", "test_runner_logic.py"]
 collect_ignore_glob = ["test_e2e_*.py"]
 
 
+@pytest.fixture(autouse=True)
+def _no_real_secrets(monkeypatch):
+    """测试绝不调用计费接口：清掉进程环境里可能存在的真实密钥（.env 也只用 tmp 文件）。"""
+    from live.settings.env import ENV_KEYS
+    for key, _, _ in ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture
 def data_dir(tmp_path):
     d = tmp_path / "live_data"

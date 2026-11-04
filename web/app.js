@@ -173,11 +173,14 @@ function startApp() {
     const tts = sv.tts;
     if (tts) {
       const fb = tts.requested && tts.engine !== tts.requested;
-      pill($('#pillTts'), `TTS ${tts.engine}${fb ? '（回退）' : ''}`, tts.error ? 'bad' : fb ? 'warn' : 'ok');
-      $('#pillTts').title = tts.error || (fb ? `首选 ${tts.requested} 不可用，已回退` : '语音合成正常');
+      pill($('#pillTts'), `TTS ${tts.engine}${fb ? '（回退）' : ''}`, fb || tts.warning ? 'warn' : 'ok');
+      $('#pillTts').title = tts.error || tts.warning || (fb ? `首选 ${tts.requested} 不可用，已回退` : '语音合成正常');
     }
     const llm = sv.llm;
-    if (llm) pill($('#pillLlm'), `LLM ${llm.available ? '可用' : '不可用'}`, llm.available ? 'ok' : 'warn');
+    if (llm) {
+      pill($('#pillLlm'), `LLM ${llm.available ? (llm.provider === 'mock' ? 'mock' : '可用') : '不可用'}`, llm.available ? 'ok' : 'warn');
+      $('#pillLlm').title = llm.reason || `${llm.provider} ${llm.model || ''}`;
+    }
     else pill($('#pillLlm'), 'LLM 未接入', '');
     const dm = sv.danmaku;
     if (dm) {
