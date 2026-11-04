@@ -11,3 +11,7 @@ models/
 tools/
 # live server
 live_data/
+# 密钥：.env 与抖音 cookie 不入库（入库的是 .env.example）
+.env
+.env.local
+secrets/

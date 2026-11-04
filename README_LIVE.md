@@ -196,3 +196,4 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 - [架构与原理](docs/live/ARCHITECTURE.md)
 - [接口文档](docs/live/API.md)
 - [二次开发指南](docs/live/DEVELOPMENT.md)
+- [第二阶段任务书（进行中）：弹幕互动 + 火山 TTS + LLM + 知识库 + 视频场景 + Web 设置热更新](docs/tasks/phase2-live-commerce/README.md)

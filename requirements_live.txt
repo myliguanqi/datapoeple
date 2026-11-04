@@ -8,6 +8,26 @@ numpy
 opencv-python
 loguru
 edge-tts>=6.1
+requests                   # 火山 TTS（HTTP SSE）、LLM（OpenAI 兼容）、抖音 fetcher 的 HTTP 请求
+python-dotenv              # 读取 .env（密钥与外部服务地址）
+
+# ---- 第二阶段：知识库（主进程）----
+jieba                      # 中文分词（FTS5 / BM25 检索前预分词）
+pypdf                      # PDF 文本解析（按页）
+beautifulsoup4             # HTML 解析（去 script/style/nav）
+rank_bm25                  # 纯 Python BM25：sqlite3 不支持 FTS5 时的备选检索后端
+
+# ---- 第二阶段：抖音弹幕（独立子进程，vendor/douyin_fetcher 的依赖，版本与上游一致）----
+# a_bogus.js 走 PyExecJS → 需要本机装 Node.js；sign.js 走 mini_racer 自带的 V8
+betterproto==2.0.0b6
+websocket-client==1.7.0
+PyExecJS==1.5.1
+mini_racer==0.12.4
+
+# ---- 测试 ----
+pytest
+httpx                      # FastAPI TestClient
+websockets                 # tests/live/test_e2e_mock.py
 
 # ---- 真实模型推理（worker 进程）----
 # Windows 上不要直接 pip install -r requirements.txt：xfuser / nvidia-nccl-cu12 是 Linux 多卡用的，
