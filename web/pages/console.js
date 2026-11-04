@@ -1,6 +1,7 @@
 // 直播控制台：画面预览 + 正在说 + 人工插话 + 会话事件。后续阶段在这里加队列、当前产品、实时数据、弹幕流。
 import { busy, card, cardHead, fmtTime, h, logList } from '../ui.js';
 import { describe, typeBadge, userTags } from '../live_events.js';
+import { statusBadge } from './interaction_tabs.js';
 
 export const title = '直播控制台';
 let cleanup = [];
@@ -15,7 +16,11 @@ export async function mount(el, app) {
   const clientStats = h('div', { class: 'stats' }, '—');
   const serverStats = h('div', { class: 'stats' }, '—');
 
-  const playing = h('div', { class: 'muted' }, '—');
+  const playing = h('div', {}, '—');
+  const playingMeta = h('div', { class: 'hint' });
+  const nextLine = h('div', { class: 'hint' });
+  const pauseIaBtn = h('button', { type: 'button', class: 'small' }, '暂停互动');
+  const pauseScBtn = h('button', { type: 'button', class: 'small' }, '暂停讲品');
   const speakText = h('textarea', { rows: 3, placeholder: '输入要说的话，回车发送（Shift+回车换行）' });
   const voiceSel = h('select', { title: '音色' });
   const interruptFirst = h('input', { type: 'checkbox' });
@@ -35,7 +40,8 @@ export async function mount(el, app) {
             h('label', { class: 'inline' }, '音量', volume)),
           clientStats, serverStats)),
       h('div', { class: 'stack' },
-        card(cardHead('现在', interruptBtn), h('div', {}, h('span', { class: 'muted' }, '正在说：'), playing)),
+        card(cardHead('现在', pauseIaBtn, pauseScBtn, interruptBtn), h('div', {}, h('span', { class: 'muted' }, '正在说：'), playing),
+          playingMeta, nextLine),
         card('人工插话', speakText,
           h('div', { class: 'row' }, voiceSel, h('label', { class: 'inline' }, interruptFirst, '先打断'),
             h('span', { class: 'grow' }), speakBtn)),
@@ -99,12 +105,19 @@ export async function mount(el, app) {
   };
   volume.oninput = () => player.setVolume(parseFloat(volume.value));
 
-  // ---- 说话 / 打断 ----
+  // ---- 说话 / 打断：主持人在管这一路会话时走主持人（进决策日志、过合规、优先级最高），否则直接让会话说 ----
+  let hostSt = null;
+  const viaHost = () => hostSt && hostSt.enabled && hostSt.session_ok && hostSt.session_id === app.sid;
   const speak = () => busy(speakBtn, async () => {
     const text = speakText.value.trim();
     if (!text) return;
-    const r = await app.api.post(`/api/sessions/${app.sid}/speak`, { text, voice: voiceSel.value || null, interrupt: interruptFirst.checked });
-    log.add(`已提交 request=${r.request_id}`);
+    if (viaHost()) {
+      await app.api.post('/api/host/say', { text, interrupt: interruptFirst.checked });
+      log.add('已交给主持人（人工插话，优先级最高）');
+    } else {
+      const r = await app.api.post(`/api/sessions/${app.sid}/speak`, { text, voice: voiceSel.value || null, interrupt: interruptFirst.checked });
+      log.add(`已提交 request=${r.request_id}`);
+    }
     speakText.value = '';
   });
   speakBtn.onclick = speak;
@@ -114,7 +127,44 @@ export async function mount(el, app) {
       speak();
     }
   };
-  interruptBtn.onclick = () => busy(interruptBtn, () => app.api.post(`/api/sessions/${app.sid}/interrupt`));
+  interruptBtn.onclick = () => busy(interruptBtn, () => app.api.post(viaHost() ? '/api/host/interrupt' : `/api/sessions/${app.sid}/interrupt`));
+  pauseIaBtn.onclick = () => busy(pauseIaBtn, async () => {
+    await app.api.post(hostSt && hostSt.pause_interaction ? '/api/interaction/resume' : '/api/interaction/pause');
+    refreshHost();
+  });
+  pauseScBtn.onclick = () => busy(pauseScBtn, async () => {
+    await app.api.post(hostSt && hostSt.pause_script ? '/api/host/script/resume' : '/api/host/script/pause');
+    refreshHost();
+  });
+  const SOURCE = { template: '模板', llm: 'LLM', knowledge: '知识库', manual: '人工', script: '讲解稿' };
+  function renderHost(st) {
+    hostSt = st;
+    pauseIaBtn.textContent = st.pause_interaction ? '恢复互动' : '暂停互动';
+    pauseIaBtn.classList.toggle('danger', st.pause_interaction);
+    pauseScBtn.textContent = st.pause_script ? '恢复讲品' : '暂停讲品';
+    pauseScBtn.classList.toggle('danger', st.pause_script);
+    const cur = st.current;
+    if (cur) {
+      playing.textContent = cur.text || '（写词中…）';
+      playingMeta.replaceChildren(h('code', {}, cur.event), ' ', cur.reason || '', cur.text_source ? ` · ${SOURCE[cur.text_source] || cur.text_source}` : '',
+        cur.interruptible ? ' · 可被打断' : '');
+    } else {
+      const s = app.session();
+      playing.textContent = (s && s.playing_text) || '（空闲）';
+      playingMeta.textContent = st.enabled ? (st.session_ok ? '主持人待命' : `主持人等待会话「${st.session_id}」`) : '主持人已关闭（直播间设置 → 主播人设）';
+    }
+    const q = st.queue || [];
+    nextLine.replaceChildren(h('span', {}, `队列 ${st.queue_size} 条`), q[0] ? h('span', {}, ' · 下一句：', h('code', {}, q[0].event), ` ${q[0].text || ''}`) : '');
+  }
+  async function refreshHost() {
+    try {
+      renderHost(await app.api.get('/api/host/status'));
+    } catch { /* 服务端没有主持人 */ }
+  }
+  const hostTimer = setInterval(refreshHost, 1000);
+  cleanup.push(() => clearInterval(hostTimer));
+  on(app.events, 'topic:host.action', refreshHost);
+  refreshHost();
 
   // ---- 实时数据 + 弹幕流 ----
   const feedRow = (e) => h('tr', {}, h('td', { class: 'num' }, fmtTime(e.ts)), h('td', {}, typeBadge(e.type)),
@@ -158,7 +208,7 @@ export async function mount(el, app) {
       playing.textContent = '—';
       return;
     }
-    playing.textContent = s.playing_text || '（空闲）';
+    if (!hostSt || !hostSt.current) playing.textContent = s.playing_text || '（空闲）';
     serverStats.textContent = `服务端 生成 ${s.gen_time_ema_s ?? '-'} s/块 · 已缓冲 ${s.buffered_s}s · 待播语音 ${s.speech_pending_s}s · TTS 队列 ${s.tts_queue} · 补帧 ${s.fillers} · 块 ${s.chunks}`;
   }
   render();

@@ -75,7 +75,10 @@ class LiveSession:
         self._epoch = 0
         self._seg_ids = itertools.count(1)
         self._seg_meta: dict = {}                  # seg_id -> (request_id, text)
-        self._req_last_seg: dict = {}              # request_id -> 最后一段 seg_id
+        # request_id -> {"open": 追加式请求还没 end, "tts": 待合成的文本块数, "segs": 未播完的段, "interrupted": 被打断}
+        # speak_done 在"已结束 + 没有待合成 + 所有段播完"时发一次；被打断的请求不发 speak_done
+        self._reqs: dict = {}
+        self._reqs_lock = threading.Lock()
         self._playing_seg = 0
         self._gen_ema = None
         self.stats = {"chunks": 0, "frames_out": 0, "fillers": 0, "gen_errors": 0,
@@ -151,10 +154,63 @@ class LiveSession:
             raise ValueError("text 为空")
         if interrupt:
             self.interrupt()
-        req = SpeakRequest(request_id or uuid.uuid4().hex[:10], text, voice, self._epoch, speed, emotion)
+        rid = request_id or uuid.uuid4().hex[:10]
+        with self._reqs_lock:
+            st = self._reqs.get(rid)
+            if st is None:
+                self._reqs[rid] = {"open": False, "tts": 1, "segs": set(), "interrupted": False, "interruptible": False}
+            else:
+                st["tts"] += 1
+        req = SpeakRequest(rid, text, voice, self._epoch, speed, emotion)
         self._tts_q.put(req)
         self._emit({"type": "speak_queued", "request_id": req.request_id, "text": text})
         return {"request_id": req.request_id, "queued": self._tts_q.qsize()}
+
+    # ---- 追加式请求：LLM 流式写词时一句一句往同一个请求里追加，speak_done 在 end 之后、最后一段播完才发 ----
+    def begin_request(self, request_id: str | None = None, interruptible: bool = False) -> str:
+        rid = request_id or uuid.uuid4().hex[:10]
+        with self._reqs_lock:
+            self._reqs[rid] = {"open": True, "tts": 0, "segs": set(), "interrupted": False,
+                               "interruptible": bool(interruptible)}
+        return rid
+
+    def append(self, request_id: str, text: str, voice: str | None = None, speed: float | None = None,
+               emotion: str | None = None) -> dict:
+        text = (text or "").strip()
+        if not text:
+            return {"request_id": request_id, "queued": self._tts_q.qsize()}
+        with self._reqs_lock:
+            st = self._reqs.get(request_id)
+            if st is None or st["interrupted"] or not st["open"]:
+                raise ValueError(f"请求 {request_id} 已结束或被打断")
+            st["tts"] += 1
+        self._tts_q.put(SpeakRequest(request_id, text, voice, self._epoch, speed, emotion))
+        self._emit({"type": "speak_queued", "request_id": request_id, "text": text})
+        return {"request_id": request_id, "queued": self._tts_q.qsize()}
+
+    def end_request(self, request_id: str) -> None:
+        with self._reqs_lock:
+            st = self._reqs.get(request_id)
+            if st is None:
+                return
+            st["open"] = False
+        self._check_done(request_id)
+
+    def request_active(self, request_id: str) -> bool:
+        with self._reqs_lock:
+            return request_id in self._reqs
+
+    def _check_done(self, request_id: str | None) -> None:
+        if not request_id:
+            return
+        with self._reqs_lock:
+            st = self._reqs.get(request_id)
+            if st is None or st["open"] or st["tts"] > 0 or st["segs"]:
+                return
+            self._reqs.pop(request_id, None)
+            done = not st["interrupted"]
+        if done:
+            self._emit({"type": "speak_done", "request_id": request_id})
 
     def push_audio(self, pcm: np.ndarray, text: str = "", interrupt: bool = False,
                    request_id: str | None = None) -> dict:
@@ -162,8 +218,10 @@ class LiveSession:
         if interrupt:
             self.interrupt()
         request_id = request_id or uuid.uuid4().hex[:10]
+        with self._reqs_lock:
+            self._reqs.setdefault(request_id, {"open": False, "tts": 0, "segs": set(), "interrupted": False,
+                                               "interruptible": False})
         seg_id = self._push_segment(request_id, text, self._postprocess(pcm))
-        self._req_last_seg[request_id] = seg_id
         return {"request_id": request_id, "seg_id": seg_id, "seconds": round(pcm.size / self.sr, 3)}
 
     def interrupt(self) -> dict:
@@ -176,12 +234,24 @@ class LiveSession:
                 break
         dropped = self.speech.clear()
         dropped_frames = 0
-        if self.cfg["live"]["interrupt_drop_queued"]:
+        drop_frames = self.cfg["live"]["interrupt_drop_queued"]
+        if drop_frames:
             with self._frames_cv:
                 dropped_frames = len(self._frames)
                 self._frames.clear()
-        self._emit({"type": "interrupted", "dropped_segments": dropped, "dropped_frames": dropped_frames})
-        return {"dropped_segments": dropped, "dropped_frames": dropped_frames}
+        rids = []
+        with self._reqs_lock:            # 被打断的请求不再发 speak_done；已生成的帧照常播完
+            for rid, st in list(self._reqs.items()):
+                rids.append(rid)
+                st.update(interrupted=True, open=False, tts=0)
+                st["segs"].difference_update(dropped)
+                if drop_frames:
+                    st["segs"].clear()
+                if not st["segs"]:
+                    self._reqs.pop(rid, None)
+        self._emit({"type": "interrupted", "dropped_segments": dropped, "dropped_frames": dropped_frames,
+                    "request_ids": rids})
+        return {"dropped_segments": dropped, "dropped_frames": dropped_frames, "request_ids": rids}
 
     def switch_model(self, model: str) -> Future:
         return self._control("switch_model", model=model)
@@ -211,6 +281,8 @@ class LiveSession:
             "chunk": self.chunk,
             "speaking": bool(seg),
             "playing_text": self._seg_meta.get(seg, (None, None))[1] if seg else None,
+            "playing_request_id": self._seg_meta.get(seg, (None, None))[0] if seg else None,
+            "open_requests": len(self._reqs),
             "buffered_s": round(self._buffered_seconds(), 3),
             "speech_pending_s": round(self.speech.pending_samples() / self.sr, 3),
             "tts_queue": self._tts_q.qsize(),
@@ -231,6 +303,10 @@ class LiveSession:
     def _push_segment(self, request_id: str, text: str, pcm: np.ndarray) -> int:
         seg_id = next(self._seg_ids)
         self._seg_meta[seg_id] = (request_id, text)
+        with self._reqs_lock:
+            st = self._reqs.get(request_id)
+            if st is not None:
+                st["segs"].add(seg_id)
         if len(self._seg_meta) > 2000:   # 防止长时间直播无限增长
             for k in list(self._seg_meta)[:1000]:
                 self._seg_meta.pop(k, None)
@@ -255,11 +331,11 @@ class LiveSession:
             except queue.Empty:
                 continue
             if req.epoch != self._epoch:
+                self._tts_done(req.request_id)
                 continue
             # 每个请求重新读配置：Web 改句间停顿 / 单句字数后下一句就生效
             gap = np.zeros(int(self.sr * self.cfg["speech"]["sentence_gap_ms"] / 1000), dtype=np.float32)
             sentences = split_sentences(req.text, max_chars=self.cfg["tts"]["max_sentence_chars"])
-            last_seg = None
             for i, sent in enumerate(sentences):
                 if req.epoch != self._epoch or self._stop.is_set():
                     break
@@ -274,12 +350,24 @@ class LiveSession:
                 if req.epoch != self._epoch or pcm.size == 0:
                     continue
                 pcm = self._postprocess(pcm)
-                if i < len(sentences) - 1:
+                if i < len(sentences) - 1 or self._req_open(req.request_id):   # 追加式请求后面还有句子：也留句间停顿
                     pcm = np.concatenate([pcm, gap])
                 logger.debug(f"[{self.sid}] TTS {time.time() - t0:.2f}s -> {pcm.size / self.sr:.2f}s: {sent}")
-                last_seg = self._push_segment(req.request_id, sent, pcm)
-            if last_seg is not None and req.epoch == self._epoch:
-                self._req_last_seg[req.request_id] = last_seg
+                self._push_segment(req.request_id, sent, pcm)
+            self._tts_done(req.request_id)
+
+    def _req_open(self, request_id: str) -> bool:
+        with self._reqs_lock:
+            st = self._reqs.get(request_id)
+            return bool(st and st["open"])
+
+    def _tts_done(self, request_id: str) -> None:
+        """一个文本块合成完（或被丢弃）：待合成数减一；这时若已全部播完（比如整块都合成失败）就发 speak_done。"""
+        with self._reqs_lock:
+            st = self._reqs.get(request_id)
+            if st is not None:
+                st["tts"] = max(0, st["tts"] - 1)
+        self._check_done(request_id)
 
     # ================================================================== 生成线程
     def _buffered_seconds(self) -> float:
@@ -429,9 +517,12 @@ class LiveSession:
         if prev:
             req_id, text = self._seg_meta.get(prev, (None, None))
             self._emit({"type": "playback", "state": "end", "seg_id": prev, "request_id": req_id})
-            if req_id and self._req_last_seg.get(req_id) == prev:
-                self._req_last_seg.pop(req_id, None)
-                self._emit({"type": "speak_done", "request_id": req_id})
+            if req_id:
+                with self._reqs_lock:
+                    st = self._reqs.get(req_id)
+                    if st is not None:
+                        st["segs"].discard(prev)
+                self._check_done(req_id)
         if seg_id:
             req_id, text = self._seg_meta.get(seg_id, (None, None))
             self._emit({"type": "playback", "state": "start", "seg_id": seg_id, "request_id": req_id,

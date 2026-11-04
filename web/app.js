@@ -197,6 +197,7 @@ function startApp() {
   // app.liveEvents：最近的弹幕事件（节流后的，最多 500 条），各页面共用；新事件派发 'live'
   app.liveEvents = [];
   app.consoleRecent = {};
+  app.cueResults = new Map();
   // 实时数据（控制台页显示）：在线人数与 1 分钟前比的变化、累计点赞、本页打开以来的礼物钻石数
   app.liveStats = { online: null, onlineHist: [], likes: null, giftDiamonds: 0, gifts: 0 };
   const trackStats = (d) => {
@@ -228,6 +229,12 @@ function startApp() {
         app.liveEvents = [];
         for (const m of app.consoleRecent['live.event'] || []) pushLive(m.data);
         events.dispatchEvent(new CustomEvent('live-reset'));
+      } else if (msg.topic === 'host.action' || msg.topic === 'interaction.cue') {
+        const mid = msg.data && msg.data.source && msg.data.source.msg_id;      // 弹幕 → 决策结果（事件流「处理」列）
+        if (mid) {
+          app.cueResults.set(mid, msg.data);
+          if (app.cueResults.size > 1000) app.cueResults.delete(app.cueResults.keys().next().value);
+        }
       } else if (msg.topic === 'live.event') {
         pushLive(msg.data);
         events.dispatchEvent(new CustomEvent('live', { detail: msg.data }));

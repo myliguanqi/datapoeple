@@ -1,6 +1,7 @@
 // 弹幕互动：连接直播间（抖音 / 模拟 / 回放）、状态、事件流、模拟注入。后续阶段加决策日志、触发器、观众（长期记忆）。
 import { badge, busy, card, confirmDialog, fmtDateTime, fmtTime, h, tabs, toast } from '../ui.js';
 import { TYPE_LABEL, cookieText, describe, pasteCookie, profileCard, typeBadge, userTags } from '../live_events.js';
+import { logTab, statusBadge, triggersTab, viewersTab } from './interaction_tabs.js';
 
 export const title = '弹幕互动';
 let cleanup = [];
@@ -93,7 +94,8 @@ export async function mount(el, app) {
 
   // ---------------------------------------------------------------- 标签页
   const pane = h('div');
-  const tabItems = [{ id: 'feed', label: '事件流' }, { id: 'sim', label: '模拟' }, ...(app.danmakuTabs || []).map((t) => ({ id: t.id, label: t.label }))];
+  const tabItems = [{ id: 'feed', label: '事件流' }, { id: 'log', label: '决策日志' }, { id: 'triggers', label: '触发器' },
+    { id: 'viewers', label: '观众' }, { id: 'sim', label: '模拟' }];
   let saved = 'feed';
   try { saved = localStorage.getItem(TAB_KEY) || 'feed'; } catch { /* ignore */ }
   let paneCleanup = null;
@@ -103,8 +105,10 @@ export async function mount(el, app) {
     paneCleanup = null;
     pane.replaceChildren();
     if (id === 'feed') paneCleanup = feedTab(pane, app);
+    else if (id === 'log') paneCleanup = logTab(pane, app);
+    else if (id === 'triggers') paneCleanup = triggersTab(pane, app);
+    else if (id === 'viewers') paneCleanup = viewersTab(pane, app);
     else if (id === 'sim') paneCleanup = simTab(pane, app, refresh);
-    else paneCleanup = (app.danmakuTabs || []).find((t) => t.id === id)?.mount(pane, app);
   });
   el.append(card(null, tabCtl.el, pane));
   cleanup.push(() => paneCleanup?.());
@@ -119,6 +123,8 @@ async function settingsMap(app) {
 const FILTERS = ['chat', 'gift', 'like', 'member', 'follow', 'share', 'fansclub', 'room_stat', 'rank', 'other'];
 function feedTab(pane, app) {
   const enabled = new Set(['chat', 'gift', 'like', 'member', 'follow', 'share', 'fansclub', 'other']);
+  const resultCells = new Map();               // msg_id -> 「处理」单元格
+  const results = app.cueResults || (app.cueResults = new Map());
   let paused = false;
   const chips = h('div', { class: 'row' }, ...FILTERS.map((t) => {
     const cb = h('input', { type: 'checkbox', checked: enabled.has(t) });
@@ -147,7 +153,30 @@ function feedTab(pane, app) {
   const row = (e) => h('tr', {},
     h('td', { class: 'num' }, fmtTime(e.ts)), h('td', {}, typeBadge(e.type)),
     h('td', {}, e.user ? userTags(e.user, { onClick: (u) => showProfile(app, u), tags: e._tags }) : h('span', { class: 'muted' }, e.type === 'member_batch' ? `${e.count} 人` : '—')),
-    h('td', {}, describe(e)), h('td', { class: 'muted' }, e._result || ''));
+    h('td', {}, describe(e)), resultCell(e));
+  function resultCell(e) {
+    const td = h('td', { class: 'muted' });
+    const mid = e.msg_id;
+    if (mid) {
+      resultCells.set(mid, td);
+      fillResult(td, results.get(mid));
+    }
+    return td;
+  }
+  function fillResult(td, r) {
+    if (!td || !r) return;
+    td.replaceChildren(h('code', {}, r.event), ' ', statusBadge(r.status));
+    td.title = r.text || r.fallback_text || '';
+  }
+  const onAction = (ev) => {
+    const d = ev.detail.data;
+    const mid = d.source && d.source.msg_id;
+    if (!mid) return;
+    results.set(mid, d);
+    fillResult(resultCells.get(mid), d);
+  };
+  app.events.addEventListener('topic:host.action', onAction);
+  app.events.addEventListener('topic:interaction.cue', onAction);
   function render() {
     const items = app.liveEvents.filter(visible).slice(-300).reverse();
     tbody.replaceChildren(...items.map(row));
@@ -167,12 +196,14 @@ function feedTab(pane, app) {
   return () => {
     app.events.removeEventListener('live', onLive);
     app.events.removeEventListener('live-reset', render);
+    app.events.removeEventListener('topic:host.action', onAction);
+    app.events.removeEventListener('topic:interaction.cue', onAction);
   };
 }
 
 async function showProfile(app, u) {
   let mem = null;
-  if (u.user_id && app.hasViewerMemory) {
+  if (u.user_id) {
     try { mem = await app.api.get(`/api/viewers/${encodeURIComponent(u.user_id)}`); } catch { /* 没建档 */ }
   }
   profileCard(u, mem);

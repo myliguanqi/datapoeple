@@ -15,6 +15,13 @@ from live.config import PROJECT_ROOT
 from live.danmaku.manager import DanmakuManager
 from live.danmaku.recorder import Recorder
 from live.feed import EventFeed
+from live.host.composer import Composer
+from live.host.host import Host
+from live.host.session_tap import SessionTap
+from live.interaction.compliance import Compliance
+from live.interaction.engine import InteractionEngine
+from live.interaction.memory import ViewerMemory
+from live.interaction.queue import CueQueue
 from live.llm.service import LLMService
 from live.manager import SessionManager
 from live.offline import OfflineManager
@@ -44,6 +51,12 @@ class AppContext:
         self.feed: EventFeed | None = None
         self.danmaku: DanmakuManager | None = None
         self.recorder: Recorder | None = None
+        self.memory: ViewerMemory | None = None
+        self.cue_queue: CueQueue | None = None
+        self.engine: InteractionEngine | None = None
+        self.compliance: Compliance | None = None
+        self.composer: Composer | None = None
+        self.host: Host | None = None
         self._subs: list = []
 
     # ------------------------------------------------------------------ 生命周期
@@ -62,6 +75,15 @@ class AppContext:
         self.feed = EventFeed(self.bus, loop, max_items=cfg["danmaku"]["feed"]["max_items"])
         self.danmaku = DanmakuManager(cfg, self.bus, self.env)
         self.recorder = Recorder(cfg, self.bus)
+        # ---- 互动引擎 + 主持人 ----
+        self.memory = ViewerMemory(cfg)
+        self.cue_queue = CueQueue(cfg)
+        self.engine = InteractionEngine(cfg, self.bus, self.cue_queue, self.memory, self.llm, context=self.host_context,
+                                        is_live=lambda: self.danmaku.status().get("state") == "connected")
+        self.compliance = Compliance(cfg)
+        self.composer = Composer(cfg, self.llm, self.compliance)
+        self.sessions.sink_factories.append(lambda sid: SessionTap(self.bus, sid))
+        self.host = Host(cfg, self.bus, self.sessions, self.cue_queue, self.composer, self.engine)
         self._subs += [
             self.settings.register(self.tts, ["tts"], name="tts"),
             self.settings.register(self.llm, ["llm"], name="llm"),
@@ -69,6 +91,7 @@ class AppContext:
             self.settings.register(self.danmaku, ["danmaku"], name="danmaku"),
             self.settings.register(self.recorder, ["danmaku.record"], name="recorder"),
             self.settings.register(_FeedSize(self.feed, cfg), ["danmaku.feed"], name="feed"),
+            self.settings.register(self.engine, ["interaction", "host.pause_interaction"], name="interaction"),
         ]
         self.danmaku.start()
         if self.start_workers:
@@ -86,7 +109,15 @@ class AppContext:
             except Exception as e:
                 logger.error(f"创建 default 会话失败: {e}")
 
+    def host_context(self) -> dict:
+        """导演渲染话术时用的上下文（当前在讲的产品等；P5 由讲品模块提供）。"""
+        return {}
+
     def stop(self) -> None:
+        if self.host is not None:
+            self.host.stop()
+        if self.engine is not None:
+            self.engine.stop()               # 会 flush 长期记忆
         if self.danmaku is not None:
             self.danmaku.stop()             # 先停弹幕子进程，避免残留
         if self.recorder is not None:
@@ -113,6 +144,7 @@ class AppContext:
             "tts": self.tts.status() if self.tts else None,
             "llm": self.llm.status() if self.llm else None,
             "danmaku": self.danmaku.status() if self.danmaku else None,
+            "interaction": self.engine.stats() if self.engine else None,
         }
 
 

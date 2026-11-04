@@ -24,6 +24,7 @@ class SessionManager:
         self.loop = loop
         self.sessions: dict = {}
         self.hubs: dict = {}
+        self.sink_factories: list = []       # [(sid) -> FrameSink]：新会话自动挂上（如主持人的 SessionTap）
         self._lock = threading.Lock()
 
     def create(self, session_id: str | None = None, model: str | None = None, avatar: str | None = None,
@@ -47,6 +48,8 @@ class SessionManager:
                                use_face_crop=lc["use_face_crop"] if use_face_crop is None else bool(use_face_crop))
             hub = WsHub(self.cfg, self.loop)
             sess.add_sink(hub)
+            for make in self.sink_factories:
+                sess.add_sink(make(sid))
             self.sessions[sid] = sess
             self.hubs[sid] = hub
         try:

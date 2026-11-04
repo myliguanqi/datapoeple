@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from live import __version__
-from live.api import console_ws, danmaku, offline, sessions, settings as settings_api, system
+from live.api import console_ws, danmaku, host as host_api, interaction, offline, sessions, settings as settings_api, system
 from live.api.deps import WRITE_METHODS, check_write
 from live.app_context import AppContext
 from live.config import PROJECT_ROOT
@@ -62,7 +62,7 @@ def create_app(cfg: dict | None = None, *, settings: SettingsCenter | None = Non
                 return JSONResponse({"detail": denied[1]}, status_code=denied[0])
         return await call_next(request)
 
-    for mod in (system, sessions, offline, settings_api, danmaku, console_ws):
+    for mod in (system, sessions, offline, settings_api, danmaku, interaction, host_api, console_ws):
         app.include_router(mod.router)
     app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
     return app

@@ -222,6 +222,117 @@ FIELDS += [
 ]
 
 
+# ============================================================================ 互动策略 / 主持人 / 人设 / 合规（第二阶段 P4）
+import os as _os
+
+_POLICY_DIR = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "interaction", "policies")
+
+
+def _read_policy(name: str) -> str:
+    try:
+        with open(_os.path.join(_POLICY_DIR, name), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+_IA = dict(group="interaction")
+_PS = dict(group="persona")
+_CP = dict(group="compliance")
+FIELDS += [
+    F("interaction.enabled", "bool", True, "互动总开关", "关掉后弹幕只显示不回应（讲品、人工插话照常）", **_IA),
+    F("interaction.tick_s", "float", 1.0, "导演节拍（秒）", "关键事件（礼物、弹幕、进场…）到了会立即算一拍", min=0.2, max=5, **_IA),
+    F("interaction.urgent_priority", "int", 24, "紧急优先级", "优先级 ≥ 此值的互动不受发声间隔限制（即收即播）", min=0, max=100, **_IA),
+    F("interaction.max_stale_s", "float", 10.0, "队列过期时间（秒）", "排队超过这么久还没说的就丢掉（单个触发器可覆盖）", min=1, max=300, **_IA),
+    F("interaction.speak_min_s", "float", 2.0, "最短发声间隔（秒）", "场子热（能量高）时两次开口的最短间隔", min=0, max=60, **_IA),
+    F("interaction.speak_max_s", "float", 18.0, "最长沉默（秒）", "场子冷时多久至少说一句（非紧急互动按能量在两者间插值）", min=1, max=300, **_IA),
+    F("interaction.energy_decay", "float", 0.9, "能量衰减系数", "每拍能量 × 该系数", min=0.5, max=1.0, **_IA),
+    F("interaction.merge_enabled", "bool", True, "同拍合并", "同一拍里「点名」和「场面」两类触发器合成一句说", **_IA),
+    F("interaction.window.chat_s", "float", 4.0, "弹幕保鲜（秒）", "超过就不回了", min=1, max=60, **_IA),
+    F("interaction.window.question_s", "float", 15.0, "产品提问保鲜（秒）", "提问比闲聊保留更久", min=1, max=120, **_IA),
+    F("interaction.window.gift_s", "float", 5.0, "礼物保鲜（秒）", min=1, max=60, **_IA),
+    F("interaction.window.member_s", "float", 5.0, "进场保鲜（秒）", min=1, max=60, **_IA),
+    F("interaction.window.follow_s", "float", 6.0, "关注保鲜（秒）", min=1, max=60, **_IA),
+    F("interaction.window.like_s", "float", 6.0, "点赞统计窗口（秒）", "窗口内累计最多的那位被点名", min=1, max=60, **_IA),
+    F("interaction.window.online_s", "float", 45.0, "在线人数变化窗口（秒）", "用于判断猛涨 / 下滑", min=5, max=600, **_IA),
+    F("interaction.window.rank_s", "float", 90.0, "在线观众名单保鲜（秒）", "冷场点名用", min=10, max=600, **_IA),
+    F("interaction.gift.min_value", "int", 1, "感谢礼物门槛（钻）", "单笔总价值 ≥ 此值才感谢", min=0, max=100000, **_IA),
+    F("interaction.gift.tier_m", "int", 10, "礼物 M 档（钻）", "单笔总价值 ≥ 此值为 M 档（正式答谢）", min=1, max=100000, **_IA),
+    F("interaction.gift.tier_l", "int", 50, "礼物 L 档（钻）", "单笔总价值 ≥ 此值为 L 档（重磅答谢）", min=1, max=1000000, **_IA),
+    F("interaction.gift.followup_delays_s", "list", [18.0, 45.0], "送礼后回踩（秒）", "答谢后隔多久再提一次送礼的人", item_type="float",
+      **_IA),
+    F("interaction.gift.repeat_window_s", "float", 180.0, "连续送礼窗口（秒）", "同一人在这段时间内再送礼走「连续送礼」话术", min=10, max=3600,
+      **_IA),
+    F("interaction.gift.king_min_value", "int", 10, "礼物榜榜首门槛（钻）", "本场累计 ≥ 此值才算榜首（防 1 钻易主刷屏）", min=1, max=1000000,
+      **_IA),
+    F("interaction.welcome.vip_gift_value", "int", 50, "金主门槛（钻）", "往场累计送礼 ≥ 此值的老观众进场 = 金主回归", min=1, max=10000000,
+      **_IA),
+    F("interaction.welcome.regular_visits", "int", 3, "熟客门槛（次）", "往场累计进场 ≥ 此次数 = 熟客", min=1, max=10000, **_IA),
+    F("interaction.welcome.high_grade_level", "int", 20, "高财富等级门槛", "进场者财富等级 ≥ 此值 = 高规格欢迎（首次来也认）", min=1, max=100,
+      **_IA),
+    F("interaction.like.min_count", "int", 5, "点赞点名门槛", "窗口内累计点赞 ≥ 此值才点名", min=1, max=10000, **_IA),
+    F("interaction.like.repeat_cooldown_factor", "float", 3.0, "同一人点赞冷却放大", "点赞最多的还是上次那个人时，冷却乘这个倍数",
+      min=1, max=20, **_IA),
+    F("interaction.online.surge_min", "int", 5, "人数猛涨门槛", "窗口内在线净涨 ≥ 此值（投流来人时承接）", min=1, max=100000, **_IA),
+    F("interaction.online.drain_min", "int", 5, "人数下滑门槛", "窗口内在线净减 ≥ 此值", min=1, max=100000, **_IA),
+    F("interaction.online.milestone_step", "int", 50, "在线破整台阶", "在线每过这个整数台阶感谢一次（0 = 关）", min=0, max=1000000, **_IA),
+    F("interaction.triggers", "dict", {}, "触发器覆盖", "按触发器名覆盖出厂表（policies/commerce.yaml）的字段：enabled / priority / cooldown_s / "
+      "emotion / directive / lines / max_stale_s / use_llm。一般在「弹幕互动 → 触发器」表格里改", **_IA),
+    F("interaction.intent.product_keywords", "list",
+      ["多少钱", "价格", "价钱", "几块", "优惠", "券", "便宜", "尺码", "码数", "多大", "尺寸", "规格", "颜色", "材质", "成分", "配料",
+       "保质期", "保修", "质保", "发货", "快递", "包邮", "运费", "售后", "退", "换货", "怎么用", "能用", "适合", "效果", "多久", "多重",
+       "容量", "产地", "正品", "链接", "有货", "库存", "赠品", "区别", "哪个好", "介绍", "讲讲"],
+      "产品提问关键词", "弹幕命中任一个就当产品提问（走知识库回答）", item_type="str", **_IA),
+    F("interaction.intent.purchase_keywords", "list",
+      ["要了", "拍了", "已拍", "下单", "已下单", "买了", "怎么拍", "怎么买", "几号链接", "上链接", "我要", "来一单", "抢到"],
+      "购买意向关键词", "命中就引导去小黄车下单", item_type="str", **_IA),
+    F("interaction.intent.spam_keywords", "list", ["加微信", "加v", "vx", "私我", "代刷", "兼职", "引流"],
+      "垃圾弹幕关键词", "命中的弹幕不回应", item_type="str", **_IA),
+    F("interaction.intent.llm_classify", "bool", False, "关键词没命中时用 LLM 判意图", "多一次 LLM 调用（计费），默认关", **_IA),
+    F("interaction.memory.enabled", "bool", True, "跨场长期记忆", "记住发过弹幕/送过礼/关注过的观众（金主、熟客识别）；纯进场不建档", **_IA),
+    F("interaction.memory.flush_interval_s", "float", 30.0, "长期记忆落盘间隔（秒）", min=1, max=600, **_IA),
+
+    F("host.enabled", "bool", True, "主持人开关", "关掉后数字人不自动说话（人工插话除外）", **_PS),
+    F("host.session_id", "str", "default", "主持的直播会话", "主持人只控制这一路会话", **_PS),
+    F("host.interrupt_priority", "int", 50, "打断讲品的优先级", "新互动优先级 ≥ 此值时打断正在讲的讲品段，回应完再续讲", min=0, max=100,
+      **_PS),
+    F("host.manual_priority", "int", 90, "人工插话优先级", min=0, max=100, **_PS),
+    F("host.pause_interaction", "bool", False, "暂停互动", "控制台上的开关：暂停后弹幕不回应（队列清空）", **_PS),
+    F("host.pause_script", "bool", False, "暂停讲品", "控制台上的开关", **_PS),
+    F("host.min_priority_during_script", "int", 10, "讲品时忽略的低优先级", "讲品进行中，优先级低于此值的互动（冷场话术等）直接跳过",
+      min=0, max=100, **_PS),
+    F("host.use_llm", "bool", True, "允许 LLM 写词", "触发器标了 use_llm 且 LLM 可用时才用；关掉则全部走模板", **_PS),
+    F("host.compose_timeout_s", "float", 6.0, "写词超时（秒）", "LLM 超过这么久没给出第一句就用兜底话术", min=0.5, max=60, **_PS),
+    F("host.reply_max_chars", "int", 40, "互动台词最大字数", min=10, max=200, **_PS),
+    F("host.answer_max_chars", "int", 70, "产品问答最大字数", min=10, max=300, **_PS),
+    F("host.speak_timeout_s", "float", 60.0, "单句播报超时（秒）", "没收到说完事件的兜底，防止主持人卡住", min=5, max=600, **_PS),
+    F("persona.anchor_name", "str", "小美", "主播自称", **_PS),
+    F("persona.shop_name", "str", "", "店铺名", **_PS),
+    F("persona.prompt", "text", _read_policy("persona_commerce.md"), "人设提示词", "LLM 写词时的系统提示；{anchor} {shop_line} 会被替换", **_PS),
+    F("persona.honorific", "dict", {"male": "哥", "female": "姐", "unknown": ""}, "称呼后缀",
+      "昵称简称后面加的字：小王哥 / 李姐；未知性别默认不加", **_PS),
+    F("persona.big_honorific", "dict", {"male": "大哥", "female": "大姐", "unknown": "家人"}, "尊称", "礼物答谢里的「大哥/大姐」", **_PS),
+
+    F("compliance.enabled", "bool", True, "合规过滤", "所有要说出口的文本（模板、LLM、讲解稿、人工插话）都过一遍", **_CP),
+    F("compliance.banned_words", "list",
+      ["最好", "最佳", "最强", "最优", "最低价", "最便宜", "最划算", "全网最低", "史上最", "第一", "唯一", "顶级", "国家级", "世界级", "首选",
+       "100%", "百分百", "绝对", "万能", "永久", "根治", "包治", "治愈", "药到病除", "特效", "神药", "稳赚", "保本", "躺赚", "零风险",
+       "加微信", "加v", "加vx", "私信我", "抽奖", "返现", "返利"],
+      "违禁词", "广告法极限词 + 平台禁语；命中有替换的换掉，没替换的删掉", item_type="str", **_CP),
+    F("compliance.replacements", "dict",
+      {"最好": "很好", "最佳": "很棒", "最强": "很强", "最优": "很优秀", "最低价": "实惠价", "最便宜": "很实惠", "最划算": "很划算",
+       "全网最低": "很划算", "第一": "很受欢迎", "唯一": "少有", "顶级": "高品质", "首选": "好选择", "绝对": "真的", "万能": "多用途",
+       "百分百": "", "100%": ""},
+      "替换表", "违禁词 → 替换成的词（空字符串 = 删掉）", **_CP),
+    F("compliance.allow_phrases", "list",
+      ["第一时间", "第一次", "第一个", "第一步", "第一段", "第一种", "第一天", "第一眼", "第一批", "第一件", "第一口", "第一波",
+       "第一轮", "第一期", "第一条", "第一点", "第一句", "最近", "最后", "最终", "最初"],
+      "放行短语", "包含违禁词但意思正常的短语（序数词、时间词），不做替换；注意「第一名」「销量第一」不要加进来", item_type="str", **_CP),
+    F("compliance.block_on_hit", "bool", False, "命中即整句丢弃", "开了之后命中违禁词的句子不说，改用兜底话术", **_CP),
+    F("compliance.ai_disclosure", "str", "本直播间为 AI 数字人直播", "AI 标识文案", "场景页常驻显示（不能关闭，只能改文案）", **_CP),
+]
+
+
 # ============================================================================ 工具
 def _index(fields_: list[Field]) -> dict[str, Field]:
     out = {}
