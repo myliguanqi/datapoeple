@@ -4,8 +4,12 @@
 
 | 想改的 | 文件 |
 |---|---|
-| 新增/修改配置项 | `live/config.py` 的 `DEFAULTS`（先加在这里，带注释），再在 `live/configs/*.yaml` 覆盖 |
-| HTTP / WebSocket 接口 | `live/server.py` |
+| 新增/修改配置项 | `live/settings/schema.py`（加一行 `F(key, type, default, label, help, group=, apply=hot\|restart, min/max/choices)`，`DEFAULTS` 与 Web 设置表单都由它生成），再在 `live/configs/*.yaml` 覆盖 |
+| 设置的合并 / 校验 / 持久化 / 回滚 | `live/settings/store.py`（SettingsCenter）；`.env` 密钥 `live/settings/env.py` |
+| 服务的构造与注入 | `live/app_context.py`（AppContext）|
+| HTTP / WebSocket 接口 | `live/api/*.py`（按功能分文件：system、sessions、offline、settings、console_ws），`live/server.py` 只是 app 工厂 + 写操作鉴权中间件 |
+| 事件总线 / 统一事件模型 / 注册表 / 可注入时钟 | `live/core/bus.py`、`events.py`、`registry.py`、`clock.py` |
+| 控制台推送（/ws/console） | `live/feed.py` |
 | 直播调度、空闲/说话、打断、事件 | `live/session.py` |
 | 空闲音频策略 | `live/idle.py` |
 | TTS | `live/tts/`（`create_tts` 里注册） |
@@ -13,10 +17,13 @@
 | 真实模型推理 | `live/worker/flashhead_runner.py` |
 | 显卡调度 / 多进程 RPC | `live/pool.py`、`live/worker/process.py` |
 | 离线视频 | `live/offline.py` |
-| 网页 | `web/app.js`（界面）、`web/player.js`（播放器，可单独复用） |
+| 网页 | `web/app.js`（外壳：路由、顶栏徽章、口令、/ws/console）、`web/api.js`（fetch 封装）、`web/ui.js`（公共组件）、`web/pages/*.js`（每页一个模块）、`web/player.js`（播放器，可单独复用）。原生 ES modules，无构建、无 CDN |
 
 约定：
 - **主进程不 import torch**。需要 GPU 的逻辑全部放进 Runner，经 RPC 调用。
+- 模块之间只通过**事件总线**、**构造时注入的接口**、**HTTP API** 通信，不互相 import 内部实现或全局变量。
+- 密钥只从 `live/settings/env.py` 的 `Env` 读，模块不直接读 `os.environ`；日志里不打印密钥（`env.mask()` 只给长度）。
+- 每类能力 = 接口（`base.py`）+ 实现 + 注册（`live/core/registry.py` 的 `Registry`），新增实现不改调用方。
 - Runner 新增可远程调用的方法，要加到 `live/worker/__init__.py` 的 `RUNNER_METHODS` 白名单，MockRunner 也要实现一份。
 - 播放线程里调用的 `FrameSink.on_frame` 必须很快返回，耗时操作自己开线程。
 - 所有相对路径都相对项目根目录（`config._normalize` 统一转成绝对路径）。
@@ -24,6 +31,9 @@
 ## 测试
 
 ```bat
+:: 0) 单元 / 集成测试（pytest，不起服务、不起 worker 进程、不调用任何计费接口）
+python -m pytest tests/live -q -m "not e2e"
+
 :: 1) 端到端（mock，不需要模型/显卡）：先起服务，再跑测试
 python live_server.py --config live/configs/mock.yaml
 python tests/live/test_e2e_mock.py          :: 依赖 requests websockets；33 项
@@ -31,6 +41,10 @@ python tests/live/test_e2e_mock.py          :: 依赖 requests websockets；33 �
 :: 2) 真实推理后端的逻辑测试（需要 torch+CUDA+官方依赖，不需要权重）
 python tests/live/test_runner_logic.py      :: 18 项
 ```
+
+pytest 测试放 `tests/live/test_*.py`；夹具在 `tests/live/conftest.py`（`make_client()` 起一个不带 worker 进程的 FastAPI TestClient，
+可指定来源 IP 和 `.env` 内容）。原有的两个脚本和 `test_e2e_*.py` 不让 pytest 收集，按上面的命令单独跑。
+时间相关逻辑用 `live/core/clock.py` 的 `FakeClock` 注入，不要 `sleep`。
 
 `test_runner_logic.py` 用官方 `FlashHeadPipeline` 的 `prepare_params / generate` 原代码，只把 DiT、VAE、wav2vec
 换成微型假模块，验证：Windows 无 xfuser 时能导入、块大小、多会话状态互不干扰（逐位一致）、
@@ -46,6 +60,17 @@ lite→pro 切换的运动帧接续、换形象、卸载保护。它**不能**�
 - `mock.speed` 设成 > 1（如 `{lite: 1.3}`）可以模拟显卡跟不上，观察补帧、warning 事件和客户端表现；
 - `models.quiet_pipeline_logs: false` 打开官方 pipeline 每步耗时的打印；
 - FastAPI 自带调试页面 `http://127.0.0.1:8000/docs`。
+
+## 扩展：新增配置项 / 让模块支持热更新
+
+1. 在 `live/settings/schema.py` 对应分组加一行，例如
+   `F("speech.fade_ms", "int", 15, "句首尾淡入淡出（毫秒）", "避免爆音", min=0, max=200, group="avatar")`；
+   默认 `apply=hot`，只有在启动时才读、改了必须重启的项写 `apply=RESTART`。路径类加 `path=True`（相对路径相对项目根目录）。
+2. 模块里用这个值：
+   - 能"每次用的时候读 `cfg[...]`"就这样做——热更新自动生效，不用写别的；
+   - 缓存了对象（客户端、文件、模型）的，实现 `apply_settings(self, settings, changed)`，在 `AppContext.start()` 里
+     `self.settings.register(obj, ["前缀"])`。`changed` 只含该前缀下真正变化的 hot 键。
+3. Web 设置页自动出现这一项（标签、说明、范围、即时生效/需重启徽章都来自 schema），不用改前端。
 
 ## 扩展：新增 TTS 引擎
 
@@ -164,7 +189,8 @@ class RtmpSink(FrameSink):
 - [ ] worker 进程崩溃后自动重启，并重建它上面的会话
 - [ ] 未预加载的模型改为后台加载，加载期间直播不停（目前切换时同步加载会补帧）
 - [ ] RTMP / WebRTC / 虚拟摄像头输出端
-- [ ] 接口鉴权（目前任何能访问端口的人都能控制）、HTTPS
+- [x] 接口鉴权：写操作需 `ADMIN_TOKEN`，未设置时只允许本机（第二阶段 P1）
+- [ ] HTTPS
 - [ ] 离线任务结果持久化与定期清理（目前在内存里，`live_data/offline/` 文件不会自动删除）
 - [ ] 多形象预加载与秒切（官方 `prepare_params` 支持目录 + `reset_person_name`）
 - [ ] 基于真实模型调参：`idle` 策略、`speech.target_rms_db`、`live.safety_factor`

@@ -3,11 +3,24 @@
 默认地址 `http://<host>:8000`。所有 JSON 接口出错时返回 `{"detail": "原因"}` 和对应 HTTP 状态码。
 FastAPI 自带的交互式文档：`/docs`。
 
+## 鉴权（写操作）
+
+所有 `/api/` 下的 **POST / PUT / PATCH / DELETE** 都要求写权限：
+
+| `.env` 的 `ADMIN_TOKEN` | 规则 |
+|---|---|
+| 已设置 | 请求头 `X-Admin-Token: <口令>`，不对返回 **401** |
+| 未设置 | 只允许本机（127.0.0.1 / ::1）调用，其他来源返回 **403** |
+
+GET 接口与画面推流不受限（局域网里其他人能看画面，但不能改）。画面 WebSocket 里的 `speak` / `interrupt` 控制消息同样需要写权限，
+口令放 URL：`/ws/sessions/default?token=<口令>`（本机且未设口令时不需要）；`hello` 消息里的 `can_write` 表示这条连接能否发控制消息。
+网页客户端在收到 401 时会弹框要口令，存在浏览器本地。
+
 ## 网页
 
 | 地址 | 说明 |
 |---|---|
-| `/` | 完整控制台。参数：`session=`、`autoconnect=1`、`latency=0.3`、`subs=0` |
+| `/` | 完整控制台（侧边栏分页，hash 路由：`#/console` 直播控制台、`#/danmaku` 弹幕互动、`#/products` 产品与知识库、`#/media` 视频素材、`#/settings` 直播间设置、`#/system` 数字人与系统、`#/offline` 离线视频）。参数：`session=`、`autoconnect=1`、`latency=0.3`、`subs=0` |
 | `/?view=1&session=default` | 纯画面模式：全屏画面 + 字幕，自动连接、断线重连，给 OBS 浏览器源用 |
 | `/web/player.js` | 播放器模块（ES module），可在自己的页面里复用，用法见文件头注释 |
 
@@ -15,8 +28,28 @@ FastAPI 自带的交互式文档：`/docs`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存 |
+| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存。另含 `services`（各服务状态：`tts` `{requested, engine, available, error, calls, failures, last_ms}`，`llm`、`danmaku` 未接入时为 null）、`admin.token_set`、`settings.{version, pending_restart}` |
 | GET | `/api/tts/voices` | `{"engine", "default", "voices": [{"id", "name"}]}` |
+
+## 设置中心
+
+| 方法 | 路径 | 请求 | 说明 |
+|---|---|---|---|
+| GET | `/api/settings` | | `{version, groups:[{id,label}], fields:[…], pending_restart:[键]}`。每个 field：`key type label help group apply(hot\|restart) min max choices nullable item_type item_choices default value(保存后的值) running(运行中的值) source(default\|yaml\|runtime\|cli) pending_restart locked` |
+| PUT | `/api/settings` | `{"changes": {"speech.target_rms_db": -16, …}}` | 校验通过后保存并热应用。返回 `{ok, applied:[即时生效的键], restart:[需重启的键], version, pending_restart}`；校验失败 **400** `{"detail", "errors": {键: 原因}}`，整批不生效 |
+| POST | `/api/settings/reset` | `{"keys": [...]}` 或 `{}` | 去掉 Web 覆盖（不给 keys = 全部），回到配置文件/默认值 |
+| GET | `/api/settings/history` | | 最近 20 份版本 `[{version, ts, source, keys, current}]` |
+| POST | `/api/settings/rollback/{version}` | | 恢复该版本时的 Web 覆盖；版本不存在 404 |
+| GET | `/api/settings/export` | | `{version, overrides}` |
+| POST | `/api/settings/import` | `{"overrides": {...}}` | 整体替换 Web 覆盖层 |
+| POST | `/api/settings/reload-env` | | 重新读 `.env`，返回 `{changed:[键名], secrets:[…]}`，并发布 `env.changed` |
+| GET | `/api/settings/secrets-status` | | `.env` 各键 `[{key, secret, desc, configured, source(file\|env\|null), value(仅非密钥项)}]`，**密钥值永不返回** |
+
+## 控制台推送：`/ws/console`（只读）
+
+连接后先收到 `{"topic": "hello", "data": {"recent": {主题: [最近的消息…]}}}`，之后每条消息形如
+`{"topic": "settings.changed", "ts": 1730000000.0, "data": {...}}`。当前推送的主题：`settings.changed`、`env.changed`
+（后续阶段加入 `live.event`、`danmaku.status`、`interaction.cue`、`host.action` 等）。客户端可发 `{"type": "ping"}`，回 `{"topic": "pong"}`。
 
 ## 直播会话
 
@@ -81,7 +114,7 @@ curl -F image=@examples/girl.png -F "text=你好，这是测试视频。" -F mod
 连接后服务端先发一条 JSON：
 
 ```json
-{"type": "hello", "protocol": 1, "fps": 25, "sample_rate": 16000, "session": {...会话状态...}}
+{"type": "hello", "protocol": 1, "fps": 25, "sample_rate": 16000, "can_write": true, "session": {...会话状态...}}
 ```
 
 之后持续推送两种消息：**二进制帧包**（每秒 fps 个）和 **JSON 事件**（文本消息）。
@@ -147,3 +180,4 @@ asyncio.run(main())
 ```
 
 分别回 `{"type": "ack", "for": "speak", "request_id": ...}`、`{"type": "ack", "for": "interrupt", ...}`、`{"type": "pong", "ts": 123}`。
+没有写权限时 speak / interrupt 回 `{"type": "error", "message": "没有写权限…"}`（见上文「鉴权」）。

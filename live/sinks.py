@@ -70,10 +70,17 @@ class WsHub(FrameSink):
 
     def __init__(self, cfg: dict, loop: asyncio.AbstractEventLoop):
         self.loop = loop
-        self.quality = int(cfg["stream"]["jpeg_quality"])
-        self.max_queue = int(cfg["stream"]["client_queue_frames"])
+        self.cfg = cfg                # jpeg_quality / client_queue_frames 每次读，Web 改了立即生效
         self.clients: set = set()     # 只在事件循环线程里增删
         self.dropped = 0
+
+    @property
+    def quality(self) -> int:
+        return int(self.cfg["stream"]["jpeg_quality"])
+
+    @property
+    def max_queue(self) -> int:
+        return int(self.cfg["stream"]["client_queue_frames"])
 
     # 以下两个在事件循环线程里调用
     def add_client(self) -> asyncio.Queue:

@@ -16,7 +16,10 @@ class TTSEngine:
         self.cfg = cfg
         self.sr = cfg["live"]["sample_rate"]
         self.ffmpeg = cfg["server"]["ffmpeg"]
-        self.default_voice = cfg["tts"]["voice"]
+
+    @property
+    def default_voice(self) -> str:
+        return self.cfg["tts"]["voice"]          # 每次读 cfg：Web 改音色立即生效
 
     def synthesize(self, text: str, voice: str | None = None) -> np.ndarray:
         raise NotImplementedError

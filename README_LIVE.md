@@ -19,7 +19,12 @@
 
 ```
 live/                       服务层（Python 包）
-  server.py                 FastAPI 入口：REST + WebSocket + 静态网页
+  server.py                 FastAPI app 工厂 + 写操作鉴权中间件
+  app_context.py            统一构造、注入所有服务（AppContext）
+  api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、console_ws）
+  core/                     统一事件模型 events、事件总线 bus、实现注册表 registry、可注入时钟 clock
+  settings/                 设置中心：schema（所有配置项的单一来源）、store（三层合并 + 热更新 + 版本回滚）、env（.env 密钥）
+  feed.py                   控制台推送（事件总线 → /ws/console）
   manager.py                会话管理
   session.py                直播会话：TTS 线程 / 生成线程（按需提前调度）/ 播放时钟线程
   speech_buffer.py          待播语音缓冲（按 seg_id 分段）
@@ -28,17 +33,18 @@ live/                       服务层（Python 包）
   offline.py                离线视频任务
   pool.py                   worker 进程池（每卡一个）、RPC、分卡调度
   audio_utils.py            ffmpeg 解码、响度归一化、淡入淡出
-  config.py                 配置项与默认值（所有可调参数都在这里有注释）
+  config.py                 load_config()（DEFAULTS 由 settings/schema.py 生成）
   configs/live.yaml         正式配置（Windows + 双 4090）
   configs/mock.yaml         无模型调试配置
-  tts/                      TTS 引擎：edge（默认）/ http（对接自建 TTS）/ mock
+  tts/                      TTS 引擎：edge（默认）/ http（对接自建 TTS）/ mock；service.py 可热切换的统一入口
   worker/                   推理子进程
     process.py              子进程主循环（按优先级执行命令）
     flashhead_runner.py     真实 FlashHead 推理（lite/pro、多会话状态切换、模型切换接续）
     mock_runner.py          假推理（参考图微动 + 按音量画嘴）
     compat.py               Windows 兼容：xfuser 桩、torch.compile 自动检测
-web/                        网页客户端（无需构建，直接由服务端提供）
-  index.html  app.js  player.js  style.css
+web/                        网页客户端（原生 ES modules，无需构建，直接由服务端提供）
+  index.html  app.js（外壳/路由）  api.js  ui.js  player.js  style.css
+  pages/                    每页一个模块：console danmaku products media settings system offline
 docs/live/
   ARCHITECTURE.md           架构、线程模型、调度与音画同步原理
   API.md                    REST / WebSocket 接口与二进制协议
@@ -46,9 +52,11 @@ docs/live/
 tests/live/
   test_e2e_mock.py          端到端测试（起 mock 服务后运行，33 项）
   test_runner_logic.py      真实推理后端逻辑测试（需 torch+CUDA，不需要权重，18 项）
+  test_*.py                 pytest 单元/集成测试（python -m pytest tests/live -q -m "not e2e"）
 live_server.py              启动脚本
 start_live.bat / start_live_mock.bat
 requirements_live.txt
+.env.example                密钥模板（复制为 .env 填写；.env 不入库）
 ```
 
 ---
@@ -60,12 +68,26 @@ requirements_live.txt
 只需要服务层依赖（任意 Python ≥ 3.10），不需要显卡：
 
 ```bat
-pip install fastapi "uvicorn[standard]" python-multipart pyyaml numpy opencv-python loguru edge-tts
+conda create -n flashhead python=3.10 -y
+conda activate flashhead
+pip install fastapi "uvicorn[standard]" python-multipart pydantic pyyaml "numpy<2" "opencv-python<4.11" loguru edge-tts requests python-dotenv
 python live_server.py --config live/configs/mock.yaml
 ```
 
-浏览器打开 <http://127.0.0.1:8000/>，点「连接」：能看到参考图在微动（左上角显示 `MOCK LITE IDLE`），
-输入文字点「说话」，嘴会按合成音张合，字幕同步显示。mock 模拟了两张卡：default 直播在 GPU0，离线任务在 GPU1。
+（第二阶段的知识库、弹幕、测试依赖在 `requirements_live.txt` 的「真实模型推理」一段之前，mock 调试只需要装前面这几段。）
+
+浏览器打开 <http://127.0.0.1:8000/>，在「直播控制台」点「连接」：能看到参考图在微动（左上角显示 `MOCK LITE IDLE`），
+在「人工插话」输入文字点「说」，嘴会按合成音张合，字幕同步显示。mock 模拟了两张卡：default 直播在 GPU0，离线任务在 GPU1。
+
+网页按功能分页（左侧栏）：直播控制台 / 弹幕互动 / 产品与知识库 / 视频素材 / 直播间设置 / 数字人与系统 / 离线视频。
+**「直播间设置」页可以改所有配置项**：标「即时生效」的保存后立刻生效（不用重启），标「需重启」的保存后提示重启；
+支持导出/导入、历史版本回滚（最近 20 份）、恢复默认。Web 上的修改保存在 `live_data/settings.json`，优先级高于 yaml。
+
+### 密钥与写操作口令（`.env`）
+
+把 `.env.example` 复制为 `.env` 再填（`.env` 已在 `.gitignore`）。`ADMIN_TOKEN` 设了之后，所有写操作（说话、改设置、建会话……）
+都要带口令（网页会弹框要一次）；**不设则只有本机能执行写操作**，局域网里的其他电脑只能看。
+改了 `.env` 不用重启：「直播间设置 → 密钥与凭证 → 重新加载 .env」。
 
 > mock 配置默认用 `tts.engine: mock`（不联网的合成音）。想听真人声，把 `live/configs/mock.yaml` 里改成 `edge`。
 > 推送音频、离线视频、edge-tts 需要 `ffmpeg` 在 PATH 里。
@@ -132,7 +154,9 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ---
 
-## 关键配置（`live/configs/live.yaml`，完整列表与注释见 `live/config.py`）
+## 关键配置（`live/configs/live.yaml`，完整列表、范围与说明见 `live/settings/schema.py` 或网页「直播间设置」）
+
+优先级：schema 默认值 < yaml < 网页修改（`live_data/settings.json`）< 启动参数（`--port` 等）。
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
@@ -181,6 +205,9 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ## 已验证 / 未验证
 
+- ✅ 第二阶段 P1（设置中心、事件总线、接口拆分、写操作鉴权、新网页外壳）：pytest 36 项通过；重构后原有 e2e 33 项仍全部通过；
+  Edge 无头浏览器验证：各页面在 1366×768 与窄屏下无横向溢出、无 JS 报错；网页上把 `speech.target_rms_db` 从 -30 改到 -14，
+  下一句播报实测响度从 -32.5 dB 变为 -16.5 dB（即时生效），改 `gpu.devices` 显示「已保存，待重启」。
 - ✅ mock 后端端到端测试 33 项全部通过：空闲 25fps 不断流、说话/字幕/说完事件、打断、Lite↔Pro 切换不断流、
   换形象、推送音频、WebSocket 控制消息、离线任务（异步 + 同步，mp4 音视频等长）、离线任务调度到第二张卡、第二路直播。
 - ✅ 真实浏览器（Edge）里网页客户端出画、出字幕、说话状态正确，完整界面和纯画面模式都验证过；客户端 25fps、无补帧/丢包。

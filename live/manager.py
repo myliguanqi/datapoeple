@@ -76,6 +76,13 @@ class SessionManager:
         sess.close()
         return True
 
+    def apply_settings(self, settings, changed: set) -> None:
+        """Reconfigurable：idle.* 变了就让每个会话重建空闲音频源。"""
+        if any(k.startswith("idle.") for k in changed):
+            for sess in list(self.sessions.values()):
+                if sess.state == "running":
+                    sess.reload_idle()
+
     def close_all(self) -> None:
         for sid in list(self.sessions):
             try:

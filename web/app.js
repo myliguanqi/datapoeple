@@ -1,355 +1,208 @@
-// 网页客户端：连接直播会话、发文本/音频、切模型、换形象、离线生成。接口见 docs/live/API.md。
+// Web 外壳：hash 路由、顶栏状态徽章、会话选择、管理口令、/ws/console 连接、共享的画面播放器。
+// 页面模块（web/pages/*.js）导出 { title, mount(el, app), unmount?() }。接口见 docs/live/API.md。
 import { LivePlayer } from './player.js';
+import * as api from './api.js';
+import { $, h, pill, promptDialog, toast } from './ui.js';
 
-const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
-// 纯画面模式 /?view=1&session=default ：只显示画面并自动连接，可直接作为 OBS「浏览器源」
-const viewOnly = params.get('view') === '1';
-if (viewOnly) document.body.classList.add('view-only');
-if (params.get('subs') === '0') $('#subtitle').hidden = true;
-if (params.get('latency')) $('#latency').value = params.get('latency');
-const player = new LivePlayer($('#screen'), { latency: parseFloat($('#latency').value) });
-let sid = params.get('session') || 'default';
-let sessionStatus = null;
 
-// ---------------------------------------------------------------- 工具
-async function api(path, opts = {}) {
-  const r = await fetch(path, opts);
-  const ct = r.headers.get('content-type') || '';
-  const body = ct.includes('json') ? await r.json() : await r.text();
-  if (!r.ok) throw new Error((body && body.detail) || body || `HTTP ${r.status}`);
-  return body;
-}
-const postJSON = (path, data) =>
-  api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-
-function log(text, cls = '') {
-  const li = document.createElement('li');
-  li.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
-  if (cls) li.className = cls;
-  const ol = $('#log');
-  ol.prepend(li);
-  while (ol.children.length > 120) ol.lastChild.remove();
+// ---------------------------------------------------------------- 共享画面（控制台页挂载它；切页不断流）
+function createStage() {
+  const canvas = h('canvas', { width: 512, height: 512 });
+  const badgeEl = h('div', { class: 'speak-badge' }, 'IDLE');
+  const subtitle = h('div', { class: 'subtitle' });
+  const overlay = h('div', { class: 'overlay' }, '点击「连接」开始接收实时画面');
+  const el = h('div', { class: 'stage' }, canvas, badgeEl, subtitle, overlay);
+  return { el, canvas, badge: badgeEl, subtitle, overlay };
 }
 
-function pill(el, text, cls = '') {
-  el.textContent = text;
-  el.className = `pill ${cls}`;
-}
-
-async function guard(btn, fn) {
-  btn.disabled = true;
-  try {
-    await fn();
-  } catch (e) {
-    log(e.message, 'err');
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-// ---------------------------------------------------------------- 连接与播放
-function wsUrl() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${location.host}/ws/sessions/${encodeURIComponent(sid)}`;
-}
-
-$('#connectBtn').onclick = async () => {
-  if (player.connected) {
-    player.disconnect();
-    return;
-  }
-  await player.connect(wsUrl());
-};
-
-player.addEventListener('open', () => {
-  pill($('#pillConn'), `已连接 ${sid}`, 'ok');
-  $('#connectBtn').textContent = '断开';
-  $('#overlay').hidden = !player.audioLocked;
-  $('#overlay').textContent = '点击页面开始播放（浏览器要求用户操作后才能出声）';
-  log(`已连接会话 ${sid}`);
+const stage = createStage();
+if (params.get('subs') === '0') stage.subtitle.hidden = true;
+const player = new LivePlayer(stage.canvas, { latency: parseFloat(params.get('latency') || '0.3') });
+player.addEventListener('seg', (e) => {
+  stage.subtitle.textContent = e.detail.text || '';
+  stage.badge.textContent = e.detail.seg ? 'SPEAKING' : 'IDLE';
+  stage.badge.classList.toggle('speaking', !!e.detail.seg);
 });
 document.addEventListener('click', () => {
-  if (player.ctx && player.audioLocked) {
-    player.ctx.resume().then(() => {
-      if (player.connected) $('#overlay').hidden = true;
-    });
-  }
-});
-player.addEventListener('close', (e) => {
-  pill($('#pillConn'), '未连接', 'bad');
-  $('#connectBtn').textContent = '连接';
-  $('#overlay').hidden = false;
-  $('#overlay').textContent = '已断开，点击「连接」重新接收';
-  if (e.detail.reason !== 'client') log(`连接关闭 code=${e.detail.code}`, 'warn');
-});
-player.addEventListener('error', (e) => log(e.detail.message, 'err'));
-player.addEventListener('seg', (e) => {
-  $('#subtitle').textContent = e.detail.text || '';
-  const b = $('#speakBadge');
-  b.textContent = e.detail.seg ? 'SPEAKING' : 'IDLE';
-  b.classList.toggle('speaking', !!e.detail.seg);
-});
-player.addEventListener('stats', (e) => {
-  const s = e.detail;
-  $('#clientStats').textContent =
-    `客户端  ${s.fps} fps · 缓冲 ${s.bufferMs} ms · 补帧 ${s.fillers} · 重同步 ${s.resyncs} · 丢包 ${s.dropped} · 序号跳变 ${s.gaps}`;
-});
-player.addEventListener('message', (e) => {
-  const m = e.detail;
-  switch (m.type) {
-    case 'hello':
-      log(`hello: model=${m.session.model} fps=${m.fps} sr=${m.sample_rate}`);
-      break;
-    case 'speak_queued':
-      log(`排队: ${m.text}`);
-      break;
-    case 'playback':
-      if (m.state === 'start') log(`开口: ${m.text || ''}`);
-      break;
-    case 'speak_done':
-      log(`说完 request=${m.request_id}`);
-      break;
-    case 'interrupted':
-      log(`已打断，丢弃 ${m.dropped_segments.length} 段`, 'warn');
-      break;
-    case 'model_switching':
-      log(`切换模型 ${m.from} → ${m.to} ...`);
-      break;
-    case 'model':
-      log(`模型已切换为 ${m.model}（${m.chunk.chunk_frames} 帧/块）`);
-      break;
-    case 'avatar':
-      log('形象已更换');
-      break;
-    case 'warning':
-      log(m.message, 'warn');
-      break;
-    case 'error':
-      log(`错误(${m.where || ''}): ${m.message}`, 'err');
-      break;
-    case 'closed':
-      log('会话已关闭', 'warn');
-      break;
-  }
+  if (player.ctx && player.audioLocked) player.ctx.resume().then(() => player.connected && (stage.overlay.hidden = true));
 });
 
-$('#latency').oninput = (e) => {
-  const v = parseFloat(e.target.value);
-  player.setLatency(v);
-  $('#latencyVal').textContent = `${v.toFixed(2)}s`;
-};
-$('#volume').oninput = (e) => player.setVolume(parseFloat(e.target.value));
-$('#sessionSelect').onchange = async (e) => {
-  sid = e.target.value;
-  if (player.connected) await player.connect(wsUrl());
-  refreshSession();
-};
-
-// ---------------------------------------------------------------- 说话 / 打断 / 推音频
-async function speak() {
-  const text = $('#speakText').value.trim();
-  if (!text) return;
-  const body = { text, voice: $('#voiceSelect').value || null, interrupt: $('#interruptFirst').checked };
-  const r = await postJSON(`/api/sessions/${sid}/speak`, body);
-  log(`已提交 request=${r.request_id}`);
+function wsUrl(path) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${location.host}${path}`;
 }
-$('#speakBtn').onclick = () => guard($('#speakBtn'), speak);
-$('#speakText').onkeydown = (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    guard($('#speakBtn'), speak);
-  }
-};
-$('#interruptBtn').onclick = () => guard($('#interruptBtn'), () => api(`/api/sessions/${sid}/interrupt`, { method: 'POST' }));
 
-$('#audioBtn').onclick = () =>
-  guard($('#audioBtn'), async () => {
-    const f = $('#audioFile').files[0];
-    if (!f) throw new Error('请选择音频文件');
-    const fd = new FormData();
-    fd.append('file', f);
-    fd.append('text', f.name);
-    fd.append('interrupt', $('#interruptFirst').checked);
-    const r = await api(`/api/sessions/${sid}/audio`, { method: 'POST', body: fd });
-    log(`已推送音频 ${r.seconds}s`);
+// ---------------------------------------------------------------- 纯画面模式 /?view=1&session=default（OBS 浏览器源）
+if (params.get('view') === '1') {
+  document.body.className = 'view-only';
+  document.body.replaceChildren(stage.el);
+  stage.el.querySelector('.speak-badge').hidden = true;
+  const sid = params.get('session') || 'default';
+  const url = wsUrl(`/ws/sessions/${encodeURIComponent(sid)}`);
+  player.addEventListener('open', () => {
+    stage.overlay.hidden = !player.audioLocked;
+    stage.overlay.textContent = '点击页面开始播放（浏览器要求用户操作后才能出声）';
   });
-
-// ---------------------------------------------------------------- 模型 / 形象
-document.querySelectorAll('#modelSeg button').forEach((btn) => {
-  btn.onclick = () =>
-    guard(btn, async () => {
-      $('#modelHint').textContent = '切换中...';
-      await postJSON(`/api/sessions/${sid}/model`, { model: btn.dataset.model });
-      await refreshSession();
-    });
-});
-
-$('#avatarBtn').onclick = () =>
-  guard($('#avatarBtn'), async () => {
-    const f = $('#avatarFile').files[0];
-    if (!f) throw new Error('请选择图片');
-    const fd = new FormData();
-    fd.append('file', f);
-    fd.append('use_face_crop', $('#avatarCrop').checked);
-    await api(`/api/sessions/${sid}/avatar`, { method: 'POST', body: fd });
+  player.addEventListener('close', (e) => {
+    stage.overlay.hidden = false;
+    stage.overlay.textContent = '连接断开，正在重连…';
+    if (e.detail.reason !== 'client') setTimeout(() => player.connected || player.connect(url), 2000);
   });
+  player.connect(url).catch(() => {});
+} else {
+  startApp();
+}
 
-// ---------------------------------------------------------------- 离线生成
-$('#offBtn').onclick = () =>
-  guard($('#offBtn'), async () => {
-    const fd = new FormData();
-    const img = $('#offImage').files[0];
-    const aud = $('#offAudio').files[0];
-    if (img) fd.append('image', img);
-    if (aud) fd.append('audio', aud);
-    fd.append('text', $('#offText').value);
-    fd.append('model', $('#offModel').value);
-    fd.append('voice', $('#offVoice').value);
-    fd.append('use_face_crop', $('#offCrop').checked);
-    const job = await api('/api/offline/jobs', { method: 'POST', body: fd });
-    log(`离线任务 ${job.job_id} 已提交`);
-    pollJob(job.job_id);
-  });
+// ---------------------------------------------------------------- 完整控制台
+function startApp() {
+  const PAGES = {
+    console: () => import('./pages/console.js'),
+    danmaku: () => import('./pages/danmaku.js'),
+    products: () => import('./pages/products.js'),
+    media: () => import('./pages/media.js'),
+    settings: () => import('./pages/settings.js'),
+    system: () => import('./pages/system.js'),
+    offline: () => import('./pages/offline.js'),
+  };
+  const events = new EventTarget();
+  const app = {
+    api,
+    events,
+    player,
+    stage,
+    wsUrl,
+    sid: params.get('session') || 'default',
+    autoconnect: params.get('autoconnect') === '1', // 完整界面也自动连接画面（控制台页首次打开时）
+    system: null,
+    setSession(sid) {
+      if (!sid || sid === app.sid) return;
+      app.sid = sid;
+      $('#sessionSelect').value = sid;
+      events.dispatchEvent(new CustomEvent('session', { detail: sid }));
+    },
+    session() {
+      return (app.system?.sessions || []).find((s) => s.session_id === app.sid) || null;
+    },
+    refreshSystem,
+  };
+  window.__app = app; // 方便在浏览器控制台调试
 
-async function pollJob(id) {
-  $('#offVideo').hidden = true;
-  for (;;) {
-    const j = await api(`/api/offline/jobs/${id}`);
-    $('#offBar').style.width = `${Math.round(j.progress * 100)}%`;
-    $('#offMsg').textContent = `${j.status} ${j.message || ''}`;
-    if (j.status === 'done') {
-      $('#offVideo').src = `${j.video_url}?t=${Date.now()}`;
-      $('#offVideo').hidden = false;
-      log(`离线任务 ${id} 完成`);
-      refreshJobs();
-      return;
+  // ---- 主题 ----
+  const THEME_KEY = 'flashhead.theme';
+  const applyTheme = (t) => (t ? document.documentElement.setAttribute('data-theme', t) : document.documentElement.removeAttribute('data-theme'));
+  try { applyTheme(localStorage.getItem(THEME_KEY)); } catch { /* 无 localStorage */ }
+  $('#themeBtn').onclick = () => {
+    const dark = getComputedStyle(document.documentElement).colorScheme.includes('dark');
+    const next = dark ? 'light' : 'dark';
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore */ }
+  };
+
+  // ---- 口令 ----
+  const askToken = async () => {
+    const t = await promptDialog('管理口令', { label: '写操作需要 .env 里的 ADMIN_TOKEN（只存在本浏览器）', password: true, value: api.getToken() });
+    return t === null ? null : t.trim();
+  };
+  api.onTokenRequired(askToken);
+  $('#tokenBtn').onclick = async () => {
+    const t = await askToken();
+    if (t !== null) {
+      api.setToken(t);
+      toast(t ? '口令已保存' : '已清除口令', 'ok');
     }
-    if (j.status === 'failed') {
-      log(`离线任务 ${id} 失败: ${j.message}`, 'err');
-      refreshJobs();
-      return;
+  };
+
+  // ---- 路由 ----
+  const nav = $('#nav');
+  const navSelect = $('#navSelect');
+  for (const a of nav.querySelectorAll('a')) navSelect.append(new Option(a.textContent, a.dataset.page));
+  navSelect.onchange = () => (location.hash = `#/${navSelect.value}`);
+  let current = null;
+  let seq = 0;
+  async function route() {
+    const name = (location.hash.match(/^#\/(\w+)/) || [])[1] || 'console';
+    const key = PAGES[name] ? name : 'console';
+    const my = ++seq;
+    for (const a of nav.querySelectorAll('a')) a.classList.toggle('active', a.dataset.page === key);
+    navSelect.value = key;
+    const mod = await PAGES[key]();
+    if (my !== seq) return;
+    try { current?.unmount?.(); } catch (e) { console.error(e); }
+    const el = $('#page');
+    el.replaceChildren();
+    current = mod;
+    document.title = `${mod.title || key} · FlashHead 数字人直播`;
+    try {
+      await mod.mount(el, app);
+    } catch (e) {
+      console.error(e);
+      el.append(h('div', { class: 'empty' }, `页面加载失败：${e.message}`));
     }
-    await new Promise((r) => setTimeout(r, 1000));
   }
-}
+  window.addEventListener('hashchange', route);
 
-async function refreshJobs() {
-  const jobs = await api('/api/offline/jobs');
-  const ul = $('#jobList');
-  ul.innerHTML = '';
-  for (const j of jobs.slice(0, 8)) {
-    const li = document.createElement('li');
-    li.append(`${j.job_id} · ${j.model} · ${j.status} `);
-    if (j.video_url) {
-      const a = document.createElement('a');
-      a.href = j.video_url;
-      a.textContent = '下载';
-      li.append(a);
+  // ---- 顶栏状态 ----
+  $('#sessionSelect').onchange = (e) => app.setSession(e.target.value);
+  async function refreshSystem() {
+    try {
+      const sys = await api.get('/api/system');
+      app.system = sys;
+      renderTop(sys);
+      events.dispatchEvent(new CustomEvent('system', { detail: sys }));
+    } catch (e) {
+      pill($('#pillSession'), '服务未响应', 'bad');
     }
-    ul.append(li);
+    return app.system;
   }
-}
-
-// ---------------------------------------------------------------- 会话 / 系统
-$('#newSessionBtn').onclick = () =>
-  guard($('#newSessionBtn'), async () => {
-    const gpu = $('#newGpu').value;
-    const s = await postJSON('/api/sessions', { model: $('#newModel').value, gpu_id: gpu === '' ? null : parseInt(gpu, 10) });
-    log(`新会话 ${s.session_id} @ GPU${s.gpu_id}`);
-    sid = s.session_id;
-    await refreshSystem();
-    if (player.connected) await player.connect(wsUrl());
-  });
-
-$('#closeSessionBtn').onclick = () =>
-  guard($('#closeSessionBtn'), async () => {
-    if (!confirm(`关闭会话 ${sid}？`)) return;
-    await api(`/api/sessions/${sid}`, { method: 'DELETE' });
-    player.disconnect();
-    await refreshSystem();
-  });
-
-async function refreshSession() {
-  try {
-    const s = await api(`/api/sessions/${sid}`);
-    sessionStatus = s;
-    pill($('#pillState'), s.state, s.state === 'running' ? 'ok' : 'bad');
-    pill($('#pillModel'), `${s.model} · GPU${s.gpu_id}`);
-    if (s.rtf != null) pill($('#pillRtf'), `RTF ${s.rtf}`, s.rtf < 0.85 ? 'ok' : s.rtf < 1 ? 'warn' : 'bad');
-    document.querySelectorAll('#modelSeg button').forEach((b) => b.classList.toggle('active', b.dataset.model === s.model));
-    $('#modelHint').textContent = s.chunk ? `${s.chunk.chunk_frames} 帧/块 · ${s.chunk.chunk_seconds.toFixed(2)}s` : '';
-    $('#serverStats').textContent =
-      `服务端  生成 ${s.gen_time_ema_s ?? '-'} s/块 · 已缓冲 ${s.buffered_s}s · 待播语音 ${s.speech_pending_s}s · ` +
-      `TTS 队列 ${s.tts_queue} · 补帧 ${s.fillers} · 块 ${s.chunks}`;
-  } catch (e) {
-    sessionStatus = null;
-    pill($('#pillState'), '无会话', 'bad');
-  }
-}
-
-async function refreshSystem() {
-  try {
-    const sys = await api('/api/system');
+  function renderTop(sys) {
     const sel = $('#sessionSelect');
     const ids = sys.sessions.map((s) => s.session_id);
-    if (!ids.includes(sid) && ids.length) sid = ids[0];
-    sel.innerHTML = '';
-    for (const s of sys.sessions) {
-      const o = new Option(`${s.session_id} (${s.model}, GPU${s.gpu_id})`, s.session_id);
-      sel.append(o);
+    if (!ids.includes(app.sid) && ids.length && !ids.includes('default')) app.setSession(ids[0]);
+    const want = [...ids, ...(ids.includes(app.sid) ? [] : [app.sid])];
+    if ([...sel.options].map((o) => o.value).join() !== want.join()) {
+      sel.replaceChildren(...want.map((id) => new Option(ids.includes(id) ? id : `${id}（未就绪）`, id)));
     }
-    if (!ids.length) sel.append(new Option('（暂无会话，模型加载中？）', ''));
-    sel.value = sid;
-    const rows = $('#workerRows');
-    rows.innerHTML = '';
-    for (const w of sys.workers) {
-      const tr = document.createElement('tr');
-      const models = Object.keys((w.info && w.info.models) || {}).join(', ') || '-';
-      const cells = [
-        `#${w.index}`,
-        (w.info && w.info.gpu_name) || `gpu ${w.gpu_id}`,
-        w.state + (w.error ? ` (${String(w.error).split('\n')[0].slice(0, 80)})` : ''),
-        models,
-        `${w.live_sessions.length} / ${w.jobs.length}`,
-      ];
-      for (const c of cells) {
-        const td = document.createElement('td');
-        td.textContent = c;
-        tr.append(td);
-      }
-      rows.append(tr);
+    sel.value = app.sid;
+    const s = app.session();
+    if (!s) pill($('#pillSession'), ids.length ? '会话不存在' : '无会话（模型加载中？）', 'bad');
+    else pill($('#pillSession'), `会话 ${s.session_id} · ${s.model} · ${s.state}`, s.state === 'running' ? 'ok' : 'bad');
+    if (s && s.rtf != null) pill($('#pillRtf'), `RTF ${s.rtf}`, `plain ${s.rtf < 0.85 ? 'ok' : s.rtf < 1 ? 'warn' : 'bad'}`);
+    else pill($('#pillRtf'), 'RTF —', 'plain');
+    const sv = sys.services || {};
+    const tts = sv.tts;
+    if (tts) {
+      const fb = tts.requested && tts.engine !== tts.requested;
+      pill($('#pillTts'), `TTS ${tts.engine}${fb ? '（回退）' : ''}`, tts.error ? 'bad' : fb ? 'warn' : 'ok');
+      $('#pillTts').title = tts.error || (fb ? `首选 ${tts.requested} 不可用，已回退` : '语音合成正常');
     }
-  } catch (e) {
-    log(`获取系统状态失败: ${e.message}`, 'err');
+    const llm = sv.llm;
+    if (llm) pill($('#pillLlm'), `LLM ${llm.available ? '可用' : '不可用'}`, llm.available ? 'ok' : 'warn');
+    else pill($('#pillLlm'), 'LLM 未接入', '');
+    const dm = sv.danmaku;
+    if (dm) {
+      const map = { connected: ['ok', dm.logged_in ? '登录态' : '游客态'], connecting: ['warn', '连接中'], stopped: ['', '未连接'], error: ['bad', '错误'] };
+      const [k, t] = map[dm.state] || ['', dm.state];
+      pill($('#pillDanmaku'), `弹幕 ${t}`, dm.state === 'connected' && !dm.logged_in && dm.source === 'douyin' ? 'warn' : k);
+      $('#pillDanmaku').title = dm.error || `${dm.source || ''} ${dm.live_id || ''}`;
+    } else pill($('#pillDanmaku'), '弹幕 未接入', '');
   }
-}
 
-async function loadVoices() {
-  try {
-    const v = await api('/api/tts/voices');
-    for (const id of ['#voiceSelect', '#offVoice']) {
-      const sel = $(id);
-      sel.innerHTML = '';
-      for (const it of v.voices) sel.append(new Option(it.name, it.id));
-      sel.value = v.default;
-    }
-  } catch (e) {
-    log(`获取音色失败: ${e.message}`, 'warn');
+  // ---- /ws/console：设置变更、弹幕事件、决策日志……按 topic 分发给页面 ----
+  let consoleWs = null;
+  function connectConsole() {
+    consoleWs = new WebSocket(wsUrl('/ws/console'));
+    consoleWs.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      events.dispatchEvent(new CustomEvent('console', { detail: msg }));
+      events.dispatchEvent(new CustomEvent(`topic:${msg.topic}`, { detail: msg }));
+      if (msg.topic === 'settings.changed') refreshSystem();
+    };
+    consoleWs.onclose = () => setTimeout(connectConsole, 3000);
   }
-}
+  connectConsole();
 
-if (viewOnly || params.get('autoconnect') === '1') {
-  player.connect(wsUrl()).catch((e) => log(e.message, 'err'));
-  // 纯画面模式断线自动重连（主动断开 reason=client 不重连）
-  player.addEventListener('close', (e) => {
-    if (viewOnly && e.detail.reason !== 'client') setTimeout(() => player.connected || player.connect(wsUrl()), 2000);
-  });
-}
-if (!viewOnly) {
-  refreshSystem();
-  loadVoices();
-  refreshJobs();
-  setInterval(refreshSession, 1000);
-  setInterval(refreshSystem, 5000);
+  refreshSystem().then(route);
+  setInterval(refreshSystem, 2000);
 }

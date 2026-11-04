@@ -25,6 +25,9 @@
 └───────────────────────────────────────┘   └──────────────────────────────────────┘
 ```
 
+主进程里的服务由 `live/app_context.py` 的 **AppContext** 统一构造、互相注入（见 §9），FastAPI 路由按功能拆在 `live/api/*.py`，
+从 `request.app.state.ctx` 取服务；`live/server.py` 只是 app 工厂。
+
 - **主进程不碰 GPU**：只做调度、TTS、时钟、编码、网络。一张卡出问题（OOM、驱动异常）只会让对应 worker 退出，
   服务本身和另一张卡不受影响。
 - **一张卡一个进程**：Windows 没有 NCCL，用不了官方 torchrun 多卡；每卡独立进程既能让两张卡同时工作，
@@ -125,3 +128,54 @@ runner 为每个模型记录"当前装在 pipeline 上的是哪个会话"，切�
 | worker 进程退出 | 所有挂起的调用失败，会话置为 `error` 并停止；需要重建会话（自动重启 worker 是待办项） |
 | TTS 失败 | 跳过这一句，推 `error` 事件，后面的句子照常 |
 | 客户端慢 | 每个 WebSocket 客户端最多积压 `stream.client_queue_frames` 帧，超出丢最旧的，不影响其他客户端 |
+
+## 9. 主进程服务与解耦（第二阶段）
+
+```
+AppContext（live/app_context.py）
+  ├─ SettingsCenter（live/settings/store.py）── 运行配置 cfg（所有模块共享同一个 dict）
+  │     └─ EventBus（live/core/bus.py）  settings.changed / env.changed / live.event / …
+  ├─ Env（live/settings/env.py）        .env 密钥，只给"已配置/未配置"
+  ├─ TTSService（live/tts/service.py）   内部引擎可热切换
+  ├─ WorkerPool / SessionManager / OfflineManager（现有）
+  └─ EventFeed（live/feed.py）         总线 → /ws/console（Web 控制台推送）
+```
+
+模块之间只走三种通道：**事件总线**（异步广播）、**显式接口调用**（构造时注入）、**HTTP API**（给 Web / 外部系统）。
+
+### 9.1 事件总线
+
+`EventBus.subscribe(pattern, handler, queue_size=1000)`：每个订阅者一个有界队列 + 一个工作线程，
+`publish()` 永不阻塞；慢订阅者队列满了丢最旧的并计数（`bus.stats()` 可看）；handler 抛异常只记日志，不影响别人。
+主题用 fnmatch 匹配（`live.*`、`*`）。
+
+| 主题 | 发布者 | 订阅者 |
+|---|---|---|
+| `settings.changed` | SettingsCenter | 所有 Reconfigurable、EventFeed |
+| `env.changed` | Env.reload | LLM/TTS 客户端（P3 起）、EventFeed |
+
+### 9.2 设置中心与热更新
+
+三层合并（后者覆盖前者）：`live/settings/schema.py` 的默认值 ← `live/configs/*.yaml` ← `live_data/settings.json`（Web 写入）
+← 启动参数（`--port` 等，Web 上不能改）。每个设置项在 schema 里只定义一次：类型、默认、范围、中文说明、Web 分组、`hot`/`restart`。
+`live/config.py` 的 `DEFAULTS` 由 schema 生成，`load_config()` 保留给 worker 和测试。
+
+```
+PUT /api/settings {changes}
+  → 逐项校验（类型 / 范围 / 枚举 / 跨字段）→ 有错整批不生效，返回逐项错误
+  → 写 live_data/settings.json（临时文件 + os.replace）+ 版本快照 live_data/settings_history/（最近 20 份）
+  → hot 项：原地改共享的 cfg → 发布 settings.changed {keys, restart_keys, old, new, version}
+  → restart 项：只保存，GET /api/settings 里标 pending_restart
+```
+
+热更新的两种方式：
+- 模块每次使用时读 cfg（`speech.*`、`live.safety_factor/margin_s/max_ahead_chunks`、`stream.*`、`tts.voice`、
+  `tts.max_sentence_chars`）——改完下一句/下一块就生效；
+- 缓存了对象的模块实现 `Reconfigurable.apply_settings(view, changed)`，经 `SettingsCenter.register(obj, 前缀)` 订阅：
+  `TTSService`（`tts.engine`、`tts.edge.*` → 重建引擎）、`SessionManager`（`idle.*` → 各会话重建空闲音频源，新配置不可用时保留旧的并推 error 事件）。
+
+### 9.3 写操作鉴权
+
+所有 `/api/` 下的 POST/PUT/PATCH/DELETE 由 `server.py` 的中间件统一检查（新加的写接口自动受保护）：
+`.env` 设了 `ADMIN_TOKEN` 时必须带请求头 `X-Admin-Token`，否则 401；没设时只允许本机（127.0.0.1 / ::1），其他来源 403。
+画面 WebSocket 里的 speak/interrupt 控制消息同样要求写权限（`?token=`），只看画面不受限。

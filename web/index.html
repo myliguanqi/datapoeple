@@ -3,116 +3,41 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FlashHead 实时数字人</title>
+  <title>FlashHead 数字人直播</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/web/style.css">
 </head>
 <body>
-<header class="topbar">
-  <h1>FlashHead 实时数字人</h1>
+<header class="topbar" id="topbar">
+  <h1>FlashHead 数字人直播</h1>
   <div class="pills">
-    <span class="pill" id="pillConn">未连接</span>
-    <span class="pill" id="pillState">—</span>
-    <span class="pill" id="pillModel">—</span>
-    <span class="pill" id="pillRtf" title="生成耗时 / 块时长，小于 1 才能实时">RTF —</span>
+    <span class="pill" id="pillSession" title="直播会话">会话 —</span>
+    <span class="pill" id="pillDanmaku" title="弹幕连接">弹幕 —</span>
+    <span class="pill" id="pillTts" title="语音合成">TTS —</span>
+    <span class="pill" id="pillLlm" title="大模型">LLM —</span>
+    <span class="pill plain" id="pillRtf" title="生成耗时 / 块时长，小于 1 才能实时">RTF —</span>
+  </div>
+  <div class="tools">
+    <select id="sessionSelect" title="当前会话"></select>
+    <button class="small" id="tokenBtn" type="button" title="管理口令（写操作需要）">口令</button>
+    <button class="small" id="themeBtn" type="button" title="切换亮/暗主题">主题</button>
   </div>
 </header>
-
-<main class="layout">
-  <!-- 左：画面 -->
-  <section class="stage-col">
-    <div class="stage">
-      <canvas id="screen" width="512" height="512"></canvas>
-      <div class="badge" id="speakBadge">IDLE</div>
-      <div class="subtitle" id="subtitle"></div>
-      <div class="overlay" id="overlay">点击「连接」开始接收实时画面</div>
-    </div>
-    <div class="row">
-      <select id="sessionSelect" title="会话"></select>
-      <button id="connectBtn" class="primary">连接</button>
-      <label class="inline">缓冲 <input id="latency" type="range" min="0.1" max="1.5" step="0.05" value="0.3"><span id="latencyVal">0.30s</span></label>
-      <label class="inline">音量 <input id="volume" type="range" min="0" max="1.5" step="0.05" value="1"></label>
-    </div>
-    <div class="stats" id="clientStats">—</div>
-    <div class="stats" id="serverStats">—</div>
-  </section>
-
-  <!-- 右：控制 -->
-  <section class="panel-col">
-    <div class="card">
-      <h2>实时说话</h2>
-      <textarea id="speakText" rows="4" placeholder="输入要说的话，回车发送（Shift+回车换行）">大家好，欢迎来到直播间！今天给大家介绍一款新产品。</textarea>
-      <div class="row">
-        <select id="voiceSelect" title="音色"></select>
-        <label class="inline"><input type="checkbox" id="interruptFirst"> 先打断</label>
-        <span class="grow"></span>
-        <button id="interruptBtn">打断</button>
-        <button id="speakBtn" class="primary">说话</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>模型与形象</h2>
-      <div class="row">
-        <div class="seg" id="modelSeg">
-          <button data-model="lite">Lite</button>
-          <button data-model="pro">Pro</button>
-        </div>
-        <span class="hint" id="modelHint"></span>
-      </div>
-      <div class="row">
-        <input type="file" id="avatarFile" accept="image/*">
-        <label class="inline"><input type="checkbox" id="avatarCrop"> 人脸裁剪</label>
-        <button id="avatarBtn">更换形象</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>推送音频</h2>
-      <p class="hint">外部 TTS / 录音直接驱动口型（wav、mp3 等，服务端用 ffmpeg 解码）。</p>
-      <div class="row">
-        <input type="file" id="audioFile" accept="audio/*">
-        <button id="audioBtn">推送</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>离线生成视频</h2>
-      <div class="grid2">
-        <label>形象图片 <input type="file" id="offImage" accept="image/*"></label>
-        <label>或上传音频 <input type="file" id="offAudio" accept="audio/*"></label>
-      </div>
-      <textarea id="offText" rows="3" placeholder="文本（走 TTS）；上传了音频则忽略文本">你好，这是一段由图片和文字生成的数字人视频。</textarea>
-      <div class="row">
-        <select id="offModel"><option value="lite">Lite</option><option value="pro">Pro</option></select>
-        <select id="offVoice" title="音色"></select>
-        <label class="inline"><input type="checkbox" id="offCrop"> 人脸裁剪</label>
-        <span class="grow"></span>
-        <button id="offBtn" class="primary">生成</button>
-      </div>
-      <div class="progress"><div id="offBar"></div></div>
-      <div class="hint" id="offMsg"></div>
-      <video id="offVideo" controls hidden></video>
-      <ul class="jobs" id="jobList"></ul>
-    </div>
-
-    <div class="card">
-      <h2>系统</h2>
-      <div class="row">
-        <select id="newModel"><option value="lite">Lite</option><option value="pro">Pro</option></select>
-        <input id="newGpu" type="number" min="0" placeholder="GPU(可空)" style="width:7em">
-        <button id="newSessionBtn">新建会话</button>
-        <button id="closeSessionBtn">关闭当前会话</button>
-      </div>
-      <table class="workers"><thead><tr><th>worker</th><th>GPU</th><th>状态</th><th>模型</th><th>直播/离线</th></tr></thead><tbody id="workerRows"></tbody></table>
-    </div>
-
-    <div class="card">
-      <h2>事件</h2>
-      <ol class="log" id="log"></ol>
-    </div>
-  </section>
-</main>
-
+<div class="shell">
+  <aside class="sidebar">
+    <nav id="nav">
+      <a href="#/console" data-page="console">直播控制台</a>
+      <a href="#/danmaku" data-page="danmaku">弹幕互动</a>
+      <a href="#/products" data-page="products">产品与知识库</a>
+      <a href="#/media" data-page="media">视频素材</a>
+      <a href="#/settings" data-page="settings">直播间设置</a>
+      <a href="#/system" data-page="system">数字人与系统</a>
+      <a href="#/offline" data-page="offline">离线视频</a>
+      <select id="navSelect" aria-label="页面"></select>
+    </nav>
+  </aside>
+  <main class="page" id="page"></main>
+</div>
 <script type="module" src="/web/app.js"></script>
 </body>
 </html>

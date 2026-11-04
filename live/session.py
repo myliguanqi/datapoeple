@@ -237,10 +237,16 @@ class LiveSession:
                     "seconds": round(pcm.size / self.sr, 3)})
         return seg_id
 
+    def reload_idle(self) -> None:
+        """idle.* 热更新：重建空闲音频源；新配置不可用（如文件读不了）时保留旧的并报错。"""
+        try:
+            self.idle = IdleSource(self.cfg)
+            logger.info(f"[{self.sid}] 空闲音频已切换为 {self.idle.mode}")
+        except Exception as e:
+            logger.error(f"[{self.sid}] 空闲音频配置不可用，保留原设置: {e}")
+            self._emit({"type": "error", "where": "idle", "message": f"空闲音频配置不可用: {e}"})
+
     def _tts_loop(self) -> None:
-        sp = self.cfg["speech"]
-        gap = np.zeros(int(self.sr * sp["sentence_gap_ms"] / 1000), dtype=np.float32)
-        max_chars = self.cfg["tts"]["max_sentence_chars"]
         while not self._stop.is_set():
             try:
                 req: SpeakRequest = self._tts_q.get(timeout=0.2)
@@ -248,7 +254,9 @@ class LiveSession:
                 continue
             if req.epoch != self._epoch:
                 continue
-            sentences = split_sentences(req.text, max_chars=max_chars)
+            # 每个请求重新读配置：Web 改句间停顿 / 单句字数后下一句就生效
+            gap = np.zeros(int(self.sr * self.cfg["speech"]["sentence_gap_ms"] / 1000), dtype=np.float32)
+            sentences = split_sentences(req.text, max_chars=self.cfg["tts"]["max_sentence_chars"])
             last_seg = None
             for i, sent in enumerate(sentences):
                 if req.epoch != self._epoch or self._stop.is_set():
