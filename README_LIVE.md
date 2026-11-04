@@ -75,7 +75,7 @@ requirements_live.txt
 ```bat
 conda create -n flashhead python=3.10 -y
 conda activate flashhead
-pip install fastapi "uvicorn[standard]" python-multipart pydantic pyyaml "numpy<2" "opencv-python<4.11" loguru edge-tts requests python-dotenv
+pip install fastapi "uvicorn[standard]" python-multipart pydantic pyyaml "numpy<2" "opencv-python<4.12" loguru edge-tts requests python-dotenv
 python live_server.py --config live/configs/mock.yaml
 ```
 

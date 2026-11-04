@@ -4,8 +4,8 @@ uvicorn[standard]>=0.29
 python-multipart
 pydantic>=2
 pyyaml
-numpy
-opencv-python
+numpy<2                    # mediapipe 0.10.9（worker）按 numpy 1.x 编译；不钉住的话新版 opencv 会把 numpy 拉到 2.x
+opencv-python<4.12         # 4.12 起要求 numpy>=2
 loguru
 edge-tts>=6.1
 requests                   # 火山 TTS（HTTP SSE）、LLM（OpenAI 兼容）、抖音 fetcher 的 HTTP 请求
