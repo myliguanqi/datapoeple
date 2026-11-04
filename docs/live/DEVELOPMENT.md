@@ -9,7 +9,9 @@
 | 服务的构造与注入 | `live/app_context.py`（AppContext）|
 | HTTP / WebSocket 接口 | `live/api/*.py`（按功能分文件：system、sessions、offline、settings、console_ws），`live/server.py` 只是 app 工厂 + 写操作鉴权中间件 |
 | 事件总线 / 统一事件模型 / 注册表 / 可注入时钟 | `live/core/bus.py`、`events.py`、`registry.py`、`clock.py` |
-| 控制台推送（/ws/console） | `live/feed.py` |
+| 控制台推送（/ws/console）与节流 | `live/feed.py` |
+| 弹幕接入 | `live/danmaku/`：`base.py` 接口与注册、`manager.py` 子进程管理、`process.py` 子进程入口、`mock.py`、`replay.py`、`recorder.py`、`cookie.py`；抖音 `douyin/parse.py`（纯函数 + 连击聚合）、`douyin/adapter.py`（接管 vendor fetcher）|
+| 抖音 fetcher（第三方，原样复制，**不改**） | `vendor/douyin_fetcher/`；抖音改签名连不上时用上游 DouyinLiveWebFetcher 同名文件整体覆盖 |
 | 直播调度、空闲/说话、打断、事件 | `live/session.py` |
 | 空闲音频策略 | `live/idle.py` |
 | TTS | `live/tts/`（`create_tts` 里注册） |
@@ -71,6 +73,46 @@ lite→pro 切换的运动帧接续、换形象、卸载保护。它**不能**�
    - 缓存了对象（客户端、文件、模型）的，实现 `apply_settings(self, settings, changed)`，在 `AppContext.start()` 里
      `self.settings.register(obj, ["前缀"])`。`changed` 只含该前缀下真正变化的 hot 键。
 3. Web 设置页自动出现这一项（标签、说明、范围、即时生效/需重启徽章都来自 schema），不用改前端。
+
+## 扩展：新增弹幕平台
+
+弹幕源跑在子进程里，只要实现 `DanmakuSource` 并注册，Manager、事件总线、Web 都不用改：
+
+```python
+# live/danmaku/kuaishou.py
+from live.core.events import LiveEvent, ViewerProfile
+from live.danmaku.base import DanmakuSource
+
+class KuaishouSource(DanmakuSource):
+    name = "kuaishou"
+    def run(self):                               # 阻塞；返回后 DanmakuManager 按退避策略重启子进程
+        self.status({"state": "connecting", "live_id": self.opts["live_id"]})
+        client = connect_somehow(self.opts["live_id"])        # 平台 SDK / 协议
+        self.status({"state": "connected"})
+        for msg in client.messages():
+            if self.stopped:
+                break
+            if msg.kind == "comment":
+                u = ViewerProfile(user_id=str(msg.uid), nickname=msg.name, gender="unknown")
+                self.emit(LiveEvent(type="chat", platform="kuaishou", room_id=msg.room, user=u,
+                                    data={"content": msg.text, "is_emoji": False}))
+    def stop(self):
+        super().stop()
+        # 关闭连接，让 run() 尽快返回
+```
+
+```python
+# live/danmaku/base.py 末尾注册（懒加载第三方依赖，主进程不导入）
+@SOURCES.register("kuaishou")
+def _create_kuaishou(opts, emit, status):
+    from live.danmaku.kuaishou import KuaishouSource
+    return KuaishouSource(opts, emit, status)
+```
+
+再在 `live/settings/schema.py` 里给 `danmaku.source` 的 `choices` 加上 `"kuaishou"`。要点：
+- 礼物要么直接产出 `is_final=True` 的结算事件，要么复用 `GiftComboAggregator`（在 `tick()` 里调 `flush()`）；
+- 时间 `ts` 用墙钟；同一条消息重推要按 `msg_id` 去重；隐私字段（生日、手机号）不要放进 `ViewerProfile`；
+- 单元测试照 `tests/live/test_p2_parse.py`：把平台消息解析写成纯函数，用构造的消息测字段映射。
 
 ## 扩展：新增 TTS 引擎
 

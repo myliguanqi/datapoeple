@@ -1,5 +1,6 @@
 // 直播控制台：画面预览 + 正在说 + 人工插话 + 会话事件。后续阶段在这里加队列、当前产品、实时数据、弹幕流。
-import { busy, card, cardHead, h, logList } from '../ui.js';
+import { busy, card, cardHead, fmtTime, h, logList } from '../ui.js';
+import { describe, typeBadge, userTags } from '../live_events.js';
 
 export const title = '直播控制台';
 let cleanup = [];
@@ -20,6 +21,8 @@ export async function mount(el, app) {
   const interruptFirst = h('input', { type: 'checkbox' });
   const speakBtn = h('button', { class: 'primary', type: 'button' }, '说');
   const interruptBtn = h('button', { type: 'button' }, '打断');
+  const statsBox = h('div', { class: 'row num' });
+  const feedBody = h('tbody');
 
   el.append(
     h('div', { class: 'page-head' }, h('h2', {}, '直播控制台'), h('span', { class: 'grow' }),
@@ -36,7 +39,12 @@ export async function mount(el, app) {
         card('人工插话', speakText,
           h('div', { class: 'row' }, voiceSel, h('label', { class: 'inline' }, interruptFirst, '先打断'),
             h('span', { class: 'grow' }), speakBtn)),
-        card('会话事件', log.el))));
+        card(cardHead('实时数据', h('a', { href: '#/danmaku' }, '弹幕互动 →')), statsBox),
+        card('会话事件', log.el))),
+    card(cardHead('弹幕流（最近 50 条，完整版在「弹幕互动」页）'),
+      h('div', { class: 'scroll-y', style: { maxHeight: '280px' } },
+        h('table', { class: 'tbl' }, h('colgroup', {}, h('col', { style: { width: '72px' } }), h('col', { style: { width: '60px' } }),
+          h('col', { style: { width: '36%' } }), h('col')), feedBody))));
 
   // ---- 播放器 ----
   const url = () => app.wsUrl(`/ws/sessions/${encodeURIComponent(app.sid)}`);
@@ -107,6 +115,39 @@ export async function mount(el, app) {
     }
   };
   interruptBtn.onclick = () => busy(interruptBtn, () => app.api.post(`/api/sessions/${app.sid}/interrupt`));
+
+  // ---- 实时数据 + 弹幕流 ----
+  const feedRow = (e) => h('tr', {}, h('td', { class: 'num' }, fmtTime(e.ts)), h('td', {}, typeBadge(e.type)),
+    h('td', {}, e.user ? userTags(e.user, { tags: e._tags }) : ''), h('td', {}, describe(e)));
+  const shown = (e) => !['room_stat', 'rank', 'room_stats'].includes(e.type);
+  function renderFeed() {
+    const items = app.liveEvents.filter(shown).slice(-50).reverse();
+    feedBody.replaceChildren(...items.map(feedRow));
+    if (!items.length) feedBody.append(h('tr', {}, h('td', { colSpan: 4, class: 'muted' }, '还没有弹幕：到「弹幕互动」页连接直播间或开始模拟弹幕')));
+  }
+  function renderStats() {
+    const st = app.liveStats;
+    const first = st.onlineHist[0];
+    const delta = first && st.online != null ? st.online - first[1] : 0;
+    const item = (label, value, extra = '') => h('span', { class: 'inline' }, label, h('b', {}, value ?? '—'), extra);
+    statsBox.replaceChildren(
+      item('在线', st.online, delta ? h('span', { class: delta > 0 ? 'badge ok' : 'badge bad' }, `${delta > 0 ? '▲' : '▼'}${Math.abs(delta)}`) : ''),
+      item('点赞', st.likes != null ? (st.likes >= 10000 ? `${(st.likes / 10000).toFixed(1)}万` : st.likes) : null),
+      item('礼物', `${st.gifts} 笔 / ${st.giftDiamonds} 钻`));
+  }
+  on(app.events, 'live', (e) => {
+    renderStats();
+    if (!shown(e.detail)) return;
+    if (feedBody.querySelector('td[colspan]')) feedBody.replaceChildren();
+    feedBody.prepend(feedRow(e.detail));
+    while (feedBody.children.length > 50) feedBody.lastChild.remove();
+  });
+  on(app.events, 'live-reset', () => {
+    renderFeed();
+    renderStats();
+  });
+  renderFeed();
+  renderStats();
 
   // ---- 状态 ----
   on(app.events, 'system', () => render());

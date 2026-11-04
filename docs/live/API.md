@@ -45,11 +45,32 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | POST | `/api/settings/reload-env` | | 重新读 `.env`，返回 `{changed:[键名], secrets:[…]}`，并发布 `env.changed` |
 | GET | `/api/settings/secrets-status` | | `.env` 各键 `[{key, secret, desc, configured, source(file\|env\|null), value(仅非密钥项)}]`，**密钥值永不返回** |
 
+## 弹幕
+
+| 方法 | 路径 | 请求 | 说明 |
+|---|---|---|---|
+| GET | `/api/danmaku/status` | | `{state(stopped / starting / connecting / connected / backoff / disconnected / error / finished), enabled, source, live_id, room_id, logged_in, pid, events, restarts, last_event_ts, next_retry_in, error, cookie{configured, length, age_days, has_sessionid}, counters{类型: 数量}, last_online}` |
+| POST | `/api/danmaku/connect` | `{live_id?, source?}` | 写入设置 `danmaku.enabled=true`（+ 房间号/来源）并（重新）连接；source=douyin 且没有房间号时 400 |
+| POST | `/api/danmaku/disconnect` | | `danmaku.enabled=false`，停掉子进程 |
+| GET | `/api/danmaku/events?limit=100&type=chat,gift` | | 最近的原始事件（未节流，`LiveEvent.to_dict()` 列表，旧的在前） |
+| POST | `/api/danmaku/simulate` | `{type, nickname?, user_id?, gender?, wealth_level?, fans_level?, content?, gift_name?, unit_diamonds?, count?, online?, online_delta?, kind?, data?}` | 模拟注入一条事件（platform=simulate，不经过子进程）。chat 不给 content 时随机一句产品提问；room_stat 可用 `online_delta` 在当前在线人数上加减（人数猛涨/下滑） |
+| POST | `/api/danmaku/mock/start` | `{rate_per_min?}` | 切到模拟弹幕源并连接 |
+| POST | `/api/danmaku/mock/stop` | | 停止模拟弹幕源 |
+| POST | `/api/danmaku/replay` | `{file, speed?, loop?}` | 回放 JSONL（只给文件名时在 `live_data/events/` 里找） |
+| GET | `/api/danmaku/recordings` | | 录制文件列表 `[{name, path, size, mtime}]` |
+| PUT | `/api/danmaku/cookie` | `{cookie}` | 保存抖音登录 cookie（支持整条 curl / `cookie:` 请求头 / `k=v; k=v`），**只写不读**，返回 `{configured, length, updated_at, age_days, has_sessionid}`；正在连抖音时自动重连 |
+| DELETE | `/api/danmaku/cookie` | | 删除本机保存的 cookie |
+
 ## 控制台推送：`/ws/console`（只读）
 
 连接后先收到 `{"topic": "hello", "data": {"recent": {主题: [最近的消息…]}}}`，之后每条消息形如
-`{"topic": "settings.changed", "ts": 1730000000.0, "data": {...}}`。当前推送的主题：`settings.changed`、`env.changed`
-（后续阶段加入 `live.event`、`danmaku.status`、`interaction.cue`、`host.action` 等）。客户端可发 `{"type": "ping"}`，回 `{"topic": "pong"}`。
+`{"topic": "settings.changed", "ts": 1730000000.0, "data": {...}}`。当前推送的主题：`settings.changed`、`env.changed`、`danmaku.status`、`live.event`
+（后续阶段加入 `interaction.cue`、`host.action` 等）。
+
+`live.event` 推给 Web 前节流：一般事件 `data` 就是 `LiveEvent.to_dict()`；点赞合并为
+`{"type": "like_batch", "count", "events", "users": [{nickname, count}], "total", "ts"}`，普通进场合并为
+`{"type": "member_batch", "count", "users": [ViewerProfile…最多 12 个], "ts"}`（财富等级 ≥ 15 或有粉丝团的进场单独推）；
+`room_stat` 最多每 2 秒一条；连击中的礼物包（`is_final=false`）不推。要未节流的原始事件用 `GET /api/danmaku/events`。客户端可发 `{"type": "ping"}`，回 `{"topic": "pong"}`。
 
 ## 直播会话
 

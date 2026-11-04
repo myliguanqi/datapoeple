@@ -18,3 +18,6 @@ mock:
 
 tts:
   engine: mock              # 不联网；想听真人声改成 edge
+
+danmaku:
+  source: mock              # 无模型调试默认用模拟弹幕；弹幕页点「连接」或打开 danmaku.enabled 即开始

@@ -1,5 +1,6 @@
 // 直播间设置：由 GET /api/settings 的 schema 自动生成表单。每项标「即时生效 / 需重启」，改动后底部出现保存条。
 import { badge, busy, card, cardHead, confirmDialog, fmtDateTime, h, modal, table, toast } from '../ui.js';
+import { cookieText, pasteCookie } from '../live_events.js';
 
 export const title = '直播间设置';
 let cleanup = [];
@@ -211,8 +212,26 @@ export async function mount(el, app) {
     body.append(card(cardHead('密钥与凭证（.env）', reloadBtn),
       h('p', { class: 'hint' }, '密钥只放在项目根目录的 .env（参考 .env.example），这里只显示是否已配置，不显示内容。改完 .env 点「重新加载」即可，不用重启。'),
       tbl));
-    const extra = app.settingsExtras || [];
-    for (const fn of extra) body.append(await fn(app));
+    const cookieState = h('span', {});
+    const pasteBtn = h('button', { type: 'button' }, '粘贴新 cookie');
+    const clearBtn = h('button', { type: 'button', class: 'danger' }, '清除');
+    const loadCookie = async () => {
+      const st = await app.api.get('/api/danmaku/status');
+      cookieState.replaceChildren(st.cookie && st.cookie.configured ? badge('已配置', 'ok') : badge('未配置', ''), ' ', cookieText(st.cookie));
+    };
+    pasteBtn.onclick = async () => {
+      await pasteCookie(app);
+      loadCookie();
+    };
+    clearBtn.onclick = async () => {
+      if (!(await confirmDialog('删除本机保存的抖音登录 cookie？之后以游客态连接，收不到礼物。', { okText: '删除', danger: true }))) return;
+      await busy(clearBtn, () => app.api.del('/api/danmaku/cookie'));
+      loadCookie();
+    };
+    body.append(card(cardHead('抖音登录 cookie', pasteBtn, clearBtn),
+      h('p', { class: 'hint' }, '游客模式收不到礼物。cookie 等同账号密码：只存本机 secrets/（路径可用 .env 的 DOUYIN_COOKIE_FILE 改），网页只写不读。'),
+      cookieState));
+    loadCookie();
   }
 
   const onChanged = () => {

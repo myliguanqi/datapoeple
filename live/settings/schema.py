@@ -165,6 +165,34 @@ FIELDS: list[Field] = [
 ]
 
 
+# ============================================================================ 直播间与弹幕（第二阶段 P2）
+_DM = dict(group="danmaku")
+FIELDS += [
+    F("danmaku.enabled", "bool", False, "接入弹幕", "打开后按「弹幕来源」启动弹幕子进程；关掉即断开", **_DM),
+    F("danmaku.source", "enum", "douyin", "弹幕来源", "douyin 抖音直播间 / mock 模拟弹幕 / replay 回放录制的 JSONL",
+      choices=("douyin", "mock", "replay"), **_DM),
+    F("danmaku.live_id", "str", "", "抖音直播间号", "live.douyin.com/ 后面那串数字（web_rid）；修改后立即重连到新房间", **_DM),
+    F("danmaku.reconnect_delay_s", "float", 5.0, "断线重连初始间隔（秒）", "指数退避，上限 60 秒", min=1, max=60, **_DM),
+    F("danmaku.combo_timeout_s", "float", 3.0, "连击礼物结算超时（秒）", "同一连击多久没有新包就按最后的数量结算一次（⚠ 推送规律需实测）",
+      min=0.5, max=10, **_DM),
+    F("danmaku.gender_map", "dict", {"1": "male", "2": "female"}, "性别枚举映射",
+      "抖音 User.gender 数字 → male/female；上播后用已知性别的号核对，反了就对调", **_DM),
+    F("danmaku.sniff", "bool", False, "协议探针", "记录首次出现的消息类型、裸解未适配的消息（排查新消息类型时开）", **_DM),
+    F("danmaku.record", "bool", False, "录制弹幕事件", "写入 live_data/events/日期_房间.jsonl，可回放；含观众昵称，注意隐私", **_DM),
+    F("danmaku.feed.max_items", "int", 500, "Web 事件流保留条数", min=50, max=5000, **_DM),
+    F("danmaku.mock.rate_per_min", "int", 30, "模拟弹幕：每分钟事件数", min=1, max=1200, **_DM),
+    F("danmaku.mock.mix", "dict", {"chat": 0.35, "member": 0.3, "like": 0.2, "gift": 0.1, "follow": 0.05},
+      "模拟弹幕：各类事件比例", "会自动归一化；可加 share / fansclub", **_DM),
+    F("danmaku.mock.question_ratio", "float", 0.3, "模拟弹幕：产品提问占弹幕比例", min=0, max=1, **_DM),
+    F("danmaku.mock.female_ratio", "float", 0.6, "模拟弹幕：女性观众比例", min=0, max=1, **_DM),
+    F("danmaku.mock.wealth_dist", "dict", {"0": 0.45, "6": 0.3, "15": 0.15, "25": 0.08, "40": 0.02},
+      "模拟弹幕：财富等级分布", "等级 → 概率（会归一化），实际等级在该档上下浮动", **_DM),
+    F("danmaku.replay.file", "str", "", "回放文件", "录制的 JSONL（相对路径相对项目根目录）", path=True, **_DM),
+    F("danmaku.replay.speed", "float", 1.0, "回放倍速", min=0.1, max=50, **_DM),
+    F("danmaku.replay.loop", "bool", False, "循环回放", **_DM),
+]
+
+
 # ============================================================================ 工具
 def _index(fields_: list[Field]) -> dict[str, Field]:
     out = {}

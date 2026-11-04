@@ -12,6 +12,8 @@
 | 图片 + TTS 生成视频 | 离线任务接口：图片 + 文本（或音频）→ mp4，可异步轮询，也可同步直接返回文件 |
 | 双显卡 | 每张卡一个 worker 进程：直播用 0 号卡、离线用 1 号卡，或两张卡各跑一路直播。**单路画面两卡合算（序列并行）在 Windows 上未实现，见下文** |
 | 先不下载模型也能开发 | `mock` 后端：不需要模型、显卡、torch，整条链路（时钟、协议、网页、离线任务、多卡调度）都能跑 |
+| 抖音弹幕接入（第二阶段） | 独立子进程接抖音直播间（只读），弹幕/礼物/点赞/进场/关注/分享/粉丝团/在线人数/贡献榜全字段解析（性别、财富等级、粉丝团、本场消费…）；连击礼物结算一次；断线退避重连；Web 上改房间号即热切换；模拟弹幕源与 JSONL 录制/回放 |
+| 所有参数网页可改（第二阶段） | 「直播间设置」页按 schema 自动生成，标「即时生效 / 需重启」；导出/导入/历史回滚；写操作需口令 |
 
 ---
 
@@ -24,7 +26,9 @@ live/                       服务层（Python 包）
   api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、console_ws）
   core/                     统一事件模型 events、事件总线 bus、实现注册表 registry、可注入时钟 clock
   settings/                 设置中心：schema（所有配置项的单一来源）、store（三层合并 + 热更新 + 版本回滚）、env（.env 密钥）
-  feed.py                   控制台推送（事件总线 → /ws/console）
+  feed.py                   控制台推送（事件总线 → /ws/console，点赞/进场节流）
+  danmaku/                  弹幕接入：manager（子进程管理）、process（子进程入口）、mock、replay、recorder、cookie；
+    douyin/                 抖音：parse.py（protobuf → 统一事件，纯函数 + 连击聚合）、adapter.py（接管 vendor fetcher）
   manager.py                会话管理
   session.py                直播会话：TTS 线程 / 生成线程（按需提前调度）/ 播放时钟线程
   speech_buffer.py          待播语音缓冲（按 seg_id 分段）
@@ -42,6 +46,7 @@ live/                       服务层（Python 包）
     flashhead_runner.py     真实 FlashHead 推理（lite/pro、多会话状态切换、模型切换接续）
     mock_runner.py          假推理（参考图微动 + 按音量画嘴）
     compat.py               Windows 兼容：xfuser 桩、torch.compile 自动检测
+vendor/douyin_fetcher/      第三方 DouyinLiveWebFetcher（AGPL-3.0，原样复制不改；抖音改签名时整体替换）
 web/                        网页客户端（原生 ES modules，无需构建，直接由服务端提供）
   index.html  app.js（外壳/路由）  api.js  ui.js  player.js  style.css
   pages/                    每页一个模块：console danmaku products media settings system offline
@@ -133,7 +138,18 @@ python live_server.py --config live/configs/live.yaml
 启动后两个 worker 逐个加载 Lite + Pro 并预热（开了 compile 时第一次要几分钟），
 在 `/api/system` 或网页「系统」卡片里能看到状态，加载完自动创建 `default` 直播会话。
 
-### 3. 纯画面模式 / OBS 推流
+### 3. 接抖音弹幕（只读）
+
+1. 依赖：`requirements_live.txt` 里「抖音弹幕」一段（betterproto、websocket-client、PyExecJS、mini_racer）；**本机要装 Node.js**（`a_bogus.js` 走 PyExecJS 调 Node）。
+2. 「弹幕互动」页：来源选「抖音直播间」，填房间号（`live.douyin.com/` 后面那串数字），点「连接」。改房间号再点连接即热切换。
+3. **收礼物要登录 cookie**：游客模式抖音不推礼物。登录 live.douyin.com 后在浏览器开发者工具复制任意请求的 cURL（或请求头里的 cookie 行），
+   在「弹幕互动 → 粘贴 cookie」或「直播间设置 → 密钥与凭证」粘贴。只保存在本机 `secrets/douyin_cookie.txt`（已 gitignore），网页只写不读，约 2 个月过期。
+4. 没有直播间时：来源选「模拟弹幕」点连接（速率、各类比例、产品提问占比、性别比例、财富等级分布在设置里调），或在「模拟」页一键注入各类事件；
+   打开「录制事件」会写 `live_data/events/*.jsonl`，可在「模拟」页回放。
+
+只接收消息，不发弹幕、不点赞、不私信；只用于自己的直播间。抖音对 AI 数字人直播有标识等规范，开播前请查阅平台最新规则。
+
+### 4. 纯画面模式 / OBS 推流
 
 `http://127.0.0.1:8000/?view=1&session=default` 只显示画面（带字幕），打开即自动连接，断线自动重连。
 可以直接在 OBS 里加「浏览器源」填这个地址（宽高 512×512，勾选「通过 OBS 控制音频」），
@@ -142,7 +158,7 @@ URL 参数：`session=` 会话、`subs=0` 不显示字幕、`latency=0.3` 客户
 
 > 普通浏览器要求用户点击后才能出声，纯画面模式下点一下页面即可；OBS 浏览器源允许自动播放，不需要点。
 
-### 4. 用代码接入
+### 5. 用代码接入
 
 ```python
 import requests
@@ -205,6 +221,11 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ## 已验证 / 未验证
 
+- ✅ 第二阶段 P2（弹幕接入）：pytest 30 项（抖音 13 类消息全字段解析含隐私字段不提取、"1.2万"人数解析、自定义性别映射、连击聚合 5 例、
+  子进程启动/崩溃自动重启/改设置 10 秒内热切换/停止无残留、抖音源在子进程里导入 vendor 成功、录制→回放顺序与倍速、接口与 /ws/console 节流）；
+  Edge 无头验证弹幕页与控制台弹幕流（模拟源 + 快捷注入，标签显示 ♂/♀、💎财富等级、🎫粉丝团）。
+- ⚠️ **抖音真实直播间未实测**（等你确认平台规则、提供登录 cookie 后再连）：要核对字段表「实测」列、性别枚举是否反、连击推送规律
+  （combo_count / repeat_count / group_count 含义）、关注与分享的区分、带货房间商品消息的 method 名。方法：连自己的直播间，打开「协议探针」和「录制事件」。
 - ✅ 第二阶段 P1（设置中心、事件总线、接口拆分、写操作鉴权、新网页外壳）：pytest 36 项通过；重构后原有 e2e 33 项仍全部通过；
   Edge 无头浏览器验证：各页面在 1366×768 与窄屏下无横向溢出、无 JS 报错；网页上把 `speech.target_rms_db` 从 -30 改到 -14，
   下一句播报实测响度从 -32.5 dB 变为 -16.5 dB（即时生效），改 `gpu.devices` 显示「已保存，待重启」。

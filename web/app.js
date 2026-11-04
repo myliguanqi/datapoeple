@@ -181,7 +181,9 @@ function startApp() {
     else pill($('#pillLlm'), 'LLM 未接入', '');
     const dm = sv.danmaku;
     if (dm) {
-      const map = { connected: ['ok', dm.logged_in ? '登录态' : '游客态'], connecting: ['warn', '连接中'], stopped: ['', '未连接'], error: ['bad', '错误'] };
+      const label = { mock: '模拟', replay: '回放' }[dm.source] || (dm.logged_in ? '登录态' : '游客态');
+      const map = { connected: ['ok', label], connecting: ['warn', '连接中'], starting: ['warn', '启动中'], stopped: ['', '未连接'],
+        error: ['bad', '错误'], backoff: ['bad', '重连中'], disconnected: ['warn', '已断开'], finished: ['', '回放结束'] };
       const [k, t] = map[dm.state] || ['', dm.state];
       pill($('#pillDanmaku'), `弹幕 ${t}`, dm.state === 'connected' && !dm.logged_in && dm.source === 'douyin' ? 'warn' : k);
       $('#pillDanmaku').title = dm.error || `${dm.source || ''} ${dm.live_id || ''}`;
@@ -189,12 +191,44 @@ function startApp() {
   }
 
   // ---- /ws/console：设置变更、弹幕事件、决策日志……按 topic 分发给页面 ----
+  // app.liveEvents：最近的弹幕事件（节流后的，最多 500 条），各页面共用；新事件派发 'live'
+  app.liveEvents = [];
+  app.consoleRecent = {};
+  // 实时数据（控制台页显示）：在线人数与 1 分钟前比的变化、累计点赞、本页打开以来的礼物钻石数
+  app.liveStats = { online: null, onlineHist: [], likes: null, giftDiamonds: 0, gifts: 0 };
+  const trackStats = (d) => {
+    const st = app.liveStats;
+    if (d.type === 'room_stat' && d.data && d.data.online != null) {
+      st.online = d.data.online;
+      st.onlineHist.push([d.ts, d.online ?? d.data.online]);
+      while (st.onlineHist.length && st.onlineHist[0][0] < d.ts - 60) st.onlineHist.shift();
+    } else if (d.type === 'like_batch') st.likes = d.total ?? (st.likes || 0) + d.count;
+    else if (d.type === 'like') st.likes = d.data.total ?? (st.likes || 0) + (d.data.count || 1);
+    else if (d.type === 'gift' && d.data.is_final !== false) {
+      st.giftDiamonds += d.data.total_diamonds || 0;
+      st.gifts += 1;
+    }
+  };
+  const pushLive = (data) => {
+    trackStats(data);
+    app.liveEvents.push(data);
+    if (app.liveEvents.length > 500) app.liveEvents.splice(0, app.liveEvents.length - 500);
+  };
   let consoleWs = null;
   function connectConsole() {
     consoleWs = new WebSocket(wsUrl('/ws/console'));
     consoleWs.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.topic === 'hello') {
+        app.consoleRecent = msg.data.recent || {};
+        app.liveEvents = [];
+        for (const m of app.consoleRecent['live.event'] || []) pushLive(m.data);
+        events.dispatchEvent(new CustomEvent('live-reset'));
+      } else if (msg.topic === 'live.event') {
+        pushLive(msg.data);
+        events.dispatchEvent(new CustomEvent('live', { detail: msg.data }));
+      }
       events.dispatchEvent(new CustomEvent('console', { detail: msg }));
       events.dispatchEvent(new CustomEvent(`topic:${msg.topic}`, { detail: msg }));
       if (msg.topic === 'settings.changed') refreshSystem();

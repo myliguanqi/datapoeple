@@ -153,6 +153,8 @@ AppContext（live/app_context.py）
 |---|---|---|
 | `settings.changed` | SettingsCenter | 所有 Reconfigurable、EventFeed |
 | `env.changed` | Env.reload | LLM/TTS 客户端（P3 起）、EventFeed |
+| `live.event` | DanmakuManager（子进程事件 / 模拟注入） | EventFeed（节流后推 Web）、Recorder（JSONL 录制）、互动引擎与长期记忆（P4） |
+| `danmaku.status` | DanmakuManager（状态变化 + 每 5 秒） | EventFeed（Web 状态灯） |
 
 ### 9.2 设置中心与热更新
 
@@ -179,3 +181,54 @@ PUT /api/settings {changes}
 所有 `/api/` 下的 POST/PUT/PATCH/DELETE 由 `server.py` 的中间件统一检查（新加的写接口自动受保护）：
 `.env` 设了 `ADMIN_TOKEN` 时必须带请求头 `X-Admin-Token`，否则 401；没设时只允许本机（127.0.0.1 / ::1），其他来源 403。
 画面 WebSocket 里的 speak/interrupt 控制消息同样要求写权限（`?token=`），只看画面不受限。
+
+## 10. 弹幕接入（第二阶段 P2）
+
+```
+                 ┌─────────────── 弹幕子进程（每个直播间一个，multiprocessing spawn）───────────────┐
+抖音 WSS ──▶     │ vendor/douyin_fetcher（原样）← EventDouyinFetcher（adapter.py）：接管消息分发、       │
+                 │   注入登录 cookie、心跳静音、协议探针 → parse.py 纯函数 → GiftComboAggregator → 去重  │
+ 或 Mock/Replay  │ → out_q: ("event", LiveEvent.to_dict()) / ("status", {...})                          │
+                 └──────────────────────────────▲───────────────┬──────────────────────────────────────┘
+                                   ctrl_q: stop / set_sniff      │ out_q
+┌──────────────────────── 主进程 ───────────────────────────────┴───────────────────────────────────────┐
+│ DanmakuManager：起/停子进程、退避重启（reconnect_delay_s 起翻倍，上限 60s，连上清零）、热切换房间      │
+│   └─ bus.publish("live.event") ─▶ EventFeed（点赞合并 / 进场折叠 / 在线人数限频）─▶ /ws/console      │
+│                                ├─▶ Recorder（danmaku.record 打开时写 live_data/events/*.jsonl）      │
+│                                └─▶ 互动引擎（P4）                                                    │
+│ 模拟注入 POST /api/danmaku/simulate ─▶ DanmakuManager.inject()（不经过子进程）                        │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+为什么放子进程：vendor 代码（AGPL-3.0）、对 `websocket.WebSocketApp` 的全局 monkeypatch（注入 cookie）、JS 引擎
+（`sign.js` 走 mini_racer 内置 V8，`a_bogus.js` 走 PyExecJS + Node.js）都隔离在里面，崩溃、卡死不影响直播主进程；
+改房间号 = 重启子进程。vendor 原样不改：`sign.js` 的绝对路径是在子进程里把 `liveMan.generateSignature` 换成带
+`script_file` 的 partial，`a_bogus.js` 通过构造参数传绝对路径，不 `chdir`。
+
+### 10.1 统一事件模型（`live/core/events.py`）
+
+所有平台都转成 `LiveEvent{type, platform, room_id, ts(墙钟), msg_id, user: ViewerProfile, data, in_room, raw_method}`，
+可 JSON 序列化（子进程传输、录制回放、Web 推送都用 `to_dict()`）。`ViewerProfile` 含 user_id、昵称、性别（male/female/unknown）、
+财富等级/名称/累计钻石、粉丝团 {name, level, status}、用户等级、粉丝数、关注状态、认证、头像（只展示不落盘）、徽章；
+平台特有字段（抖音号、sec_uid、年龄段、城市、签名、升级进度……）放 `extra`。**生日、手机号不提取。**
+
+| type | data |
+|---|---|
+| chat | `content, is_emoji` |
+| gift | `gift_id, gift_name, unit_diamonds, count, total_diamonds, combo_id, is_final, comboable, to_user, raw{…}` |
+| like | `count, total`（抖音点赞的 user 往往没有 id） |
+| member | `member_count, enter_type, action` |
+| follow / share | `action, share_type, share_target, follow_count` |
+| fansclub | `kind: join / upgrade, content` |
+| room_stat | `online`（`online_user_for_anchor` 解析，"1.2万"→12000）`, total_pv, popularity, total_user` |
+| rank | `ranks: [{user_id, nickname, score}]` |
+| room_stats / room_notice / product_change / stream_end | 见 `live/core/events.py` 文件头 |
+
+`in_room`：`{consume: 本场消费, gift_count: 本场送礼次数}`（抖音 public_area_common）。
+
+### 10.2 连击礼物
+
+同一连击抖音会推多条。`GiftComboAggregator` 按 `combo_id = 用户:礼物:group_id(或 trace_id)` 聚合：不可连击的礼物直接结算；
+连击中产出 `is_final=False` 的进度事件（Web 不显示）；`repeat_end=1` 或 `danmaku.combo_timeout_s`（默认 3s）没有新包时结算一次
+`is_final=True`（数量取最大值）；结算后 5 秒内同一连击的重复推送丢弃。**互动引擎只处理 `is_final=True` 的礼物。**
+单次推送的数量 = max(combo_count, repeat_count)，group_count > 1 时再乘 group_count —— ⚠ 推送规律需要上播实测核对。

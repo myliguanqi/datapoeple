@@ -12,6 +12,8 @@ import threading
 from loguru import logger
 
 from live.config import PROJECT_ROOT
+from live.danmaku.manager import DanmakuManager
+from live.danmaku.recorder import Recorder
 from live.feed import EventFeed
 from live.manager import SessionManager
 from live.offline import OfflineManager
@@ -36,6 +38,8 @@ class AppContext:
         self.sessions: SessionManager | None = None
         self.offline: OfflineManager | None = None
         self.feed: EventFeed | None = None
+        self.danmaku: DanmakuManager | None = None
+        self.recorder: Recorder | None = None
         self._subs: list = []
 
     # ------------------------------------------------------------------ 生命周期
@@ -47,11 +51,17 @@ class AppContext:
         self.pool = WorkerPool(cfg)
         self.sessions = SessionManager(cfg, self.pool, self.tts, loop)
         self.offline = OfflineManager(cfg, self.pool, self.tts)
-        self.feed = EventFeed(self.bus, loop)
+        self.feed = EventFeed(self.bus, loop, max_items=cfg["danmaku"]["feed"]["max_items"])
+        self.danmaku = DanmakuManager(cfg, self.bus, self.env)
+        self.recorder = Recorder(cfg, self.bus)
         self._subs += [
             self.settings.register(self.tts, ["tts"], name="tts"),
             self.settings.register(self.sessions, ["idle"], name="sessions"),
+            self.settings.register(self.danmaku, ["danmaku"], name="danmaku"),
+            self.settings.register(self.recorder, ["danmaku.record"], name="recorder"),
+            self.settings.register(_FeedSize(self.feed, cfg), ["danmaku.feed"], name="feed"),
         ]
+        self.danmaku.start()
         if self.start_workers:
             threading.Thread(target=self._bootstrap, name="bootstrap", daemon=True).start()
 
@@ -68,6 +78,12 @@ class AppContext:
                 logger.error(f"创建 default 会话失败: {e}")
 
     def stop(self) -> None:
+        if self.danmaku is not None:
+            self.danmaku.stop()             # 先停弹幕子进程，避免残留
+        if self.recorder is not None:
+            self.recorder.close()
+        if self.feed is not None:
+            self.feed.close()
         if self.sessions is not None:
             self.sessions.close_all()
         if self.pool is not None and self.start_workers:
@@ -85,5 +101,15 @@ class AppContext:
         return {
             "tts": self.tts.status() if self.tts else None,
             "llm": None,          # P3 接入
-            "danmaku": None,      # P2 接入
+            "danmaku": self.danmaku.status() if self.danmaku else None,
         }
+
+
+class _FeedSize:
+    """danmaku.feed.max_items → EventFeed 环形缓冲大小。"""
+
+    def __init__(self, feed: EventFeed, cfg: dict):
+        self.feed, self.cfg = feed, cfg
+
+    def apply_settings(self, settings, changed: set) -> None:
+        self.feed.set_max_items(self.cfg["danmaku"]["feed"]["max_items"])
