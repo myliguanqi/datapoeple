@@ -66,6 +66,11 @@ pytest 测试放 `tests/live/test_*.py`；夹具在 `tests/live/conftest.py`（`
 由同目录 `make_fixtures.py` 不依赖第三方库生成），内容都是自造的。视频测试（`test_p6_media.py`、`test_e2e_scene.py`）用 ffmpeg 现场生成
 几秒的 testsrc 视频，不入库；没有 ffmpeg 时 P6 的 pytest 跳过。`.gitattributes` 把 pdf/mp4/图片标成二进制（`core.autocrlf` 会改坏没有 NUL 字节的 PDF）。
 
+页面走查：Edge 无头（`msedge --headless=new --remote-debugging-port=9222 --user-data-dir=<临时目录>`）打开 `http://127.0.0.1:8000/`，
+用 DevTools 协议执行 `tests/live/page_sweep.js` 里的函数（chrome-devtools MCP 的 `evaluate_script(sourcePath=…)` 即可），
+1366×768 和设备模拟 390 宽各跑一次：返回亮 / 暗主题下每个页面、每个标签的横向溢出与 JS 报错（无头窗口最窄 496，390 宽要用设备模拟）。
+改了网页 JS 后跑一遍 `node --check web/*.js web/pages/*.js`。
+
 场景页的人工检查：Edge 无头 + `--remote-debugging-port`，打开 `/scene?session=default&debug=1`（`window.__scene` 暴露当前快照和播放器），
 调 `POST /api/sessions/default/scene/video` 切不同 mode 后截图。
 

@@ -133,11 +133,18 @@ function startApp() {
     el.replaceChildren();
     current = mod;
     document.title = `${mod.title || key} · FlashHead 数字人直播`;
+    // 页面要等接口数据才画出来时，超过 200ms 显示「加载中…」，画完 / 出错后去掉
+    const loading = h('div', { class: 'page-loading' }, '加载中…');
+    const timer = setTimeout(() => el.childElementCount || el.append(loading), 200);
     try {
       await mod.mount(el, app);
     } catch (e) {
       console.error(e);
-      el.append(h('div', { class: 'empty' }, `页面加载失败：${e.message}`));
+      el.append(h('div', { class: 'empty' }, `页面加载失败：${e.message}`,
+        h('div', { class: 'hint' }, '服务没响应、或者口令不对（右上角「口令」）；刷新页面重试')));
+    } finally {
+      clearTimeout(timer);
+      loading.remove();
     }
   }
   window.addEventListener('hashchange', route);

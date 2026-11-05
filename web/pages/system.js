@@ -1,4 +1,4 @@
-// 数字人与系统：会话管理、Lite/Pro 切换、换形象、推送音频、worker 表、各服务状态。
+// 数字人与系统：会话管理、Lite/Pro 切换、换形象、推送音频、worker 表、各服务状态（TTS / LLM / 知识库与 Embedding / 弹幕子进程）。
 import { badge, busy, card, cardHead, confirmDialog, h, table, toast } from '../ui.js';
 
 export const title = '数字人与系统';
@@ -7,7 +7,7 @@ let cleanup = [];
 export async function mount(el, app) {
   const sessBox = h('div');
   const workerBox = h('div');
-  const svcBox = h('div', { class: 'grid cols-3' });
+  const svcBox = h('div', { class: 'grid cols-4' });
   const modelSeg = h('div', { class: 'seg' },
     ...['lite', 'pro'].map((m) => h('button', { type: 'button', dataset: { model: m } }, m === 'lite' ? 'Lite' : 'Pro')));
   const modelHint = h('span', { class: 'hint' });
@@ -101,6 +101,8 @@ export async function mount(el, app) {
     const t = sv.tts;
     const l = sv.llm;
     const d = sv.danmaku;
+    const k = sv.knowledge;
+    const vec = k && k.index && k.index.vector;
     svcBox.replaceChildren(
       svcCard('语音合成（TTS）', t, t && [
         ['引擎', h('span', {}, t.engine, ' ', t.engine !== t.requested ? badge(`首选 ${t.requested} 不可用`, 'warn') : badge('正常', 'ok'))],
@@ -118,6 +120,14 @@ export async function mount(el, app) {
         ['最近耗时', l.last_ms != null ? `${l.last_ms} ms${l.last_ttft_ms != null ? `（首字 ${l.last_ttft_ms} ms）` : ''}` : '—'],
         ['今日调用', `${l.today_calls ?? 0}${l.daily_max_calls ? ` / 上限 ${l.daily_max_calls}` : ''}`],
         ['最近错误', l.last_error || '—'],
+      ]),
+      svcCard('知识库与向量检索', k, k && [
+        ['检索后端', h('span', {}, k.active_backend, ' ', k.warning ? badge('有提示', 'warn') : badge('正常', 'ok'))],
+        ['文档 / 切块', `${k.docs} / ${k.chunks}${k.by_status && k.by_status.failed ? `（${k.by_status.failed} 份失败）` : ''}`],
+        ['待重建', k.stale_docs ? `${k.stale_docs} 份（切块参数改过）` : '—'],
+        ['Embedding', vec ? (vec.available ? `${vec.model} · ${vec.vectors} 个向量${vec.missing ? `，缺 ${vec.missing}` : ''}` : badge(vec.last_error || '不可用', 'warn'))
+          : (k.backend === 'hybrid' ? badge('未启用', 'warn') : '未使用（关键词检索）')],
+        ['提示', k.warning || '—'],
       ]),
       svcCard('弹幕子进程', d, d && [
         ['状态', `${d.state}${d.logged_in ? '（登录态）' : d.source === 'douyin' && d.state === 'connected' ? '（游客态）' : ''}`],

@@ -25,7 +25,7 @@ export async function mount(el, app) {
   const voiceSel = h('select', { title: '音色' });
   const interruptFirst = h('input', { type: 'checkbox' });
   const speakBtn = h('button', { class: 'primary', type: 'button' }, '说');
-  const interruptBtn = h('button', { type: 'button' }, '打断');
+  const interruptBtn = h('button', { type: 'button', class: 'small' }, '打断');
   const statsBox = h('div', { class: 'row num' });
   const productSel = h('select', { title: '当前讲解的产品' });
   const prevBtn = h('button', { type: 'button', class: 'small' }, '上一个');
