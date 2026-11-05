@@ -20,6 +20,12 @@ async def index():
     return FileResponse(os.path.join(WEB_DIR, "index.html"))
 
 
+@router.get("/scene")
+async def scene_page():
+    """直播场景页（OBS 浏览器源）：/scene?session=default"""
+    return FileResponse(os.path.join(WEB_DIR, "scene.html"))
+
+
 @router.get("/api/system")
 async def system(request: Request, refresh: bool = False):
     ctx = get_ctx(request)

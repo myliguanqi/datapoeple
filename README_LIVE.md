@@ -15,6 +15,7 @@
 | 抖音弹幕接入（第二阶段） | 独立子进程接抖音直播间（只读），弹幕/礼物/点赞/进场/关注/分享/粉丝团/在线人数/贡献榜全字段解析（性别、财富等级、粉丝团、本场消费…）；连击礼物结算一次；断线退避重连；Web 上改房间号即热切换；模拟弹幕源与 JSONL 录制/回放 |
 | 弹幕自动互动（第二阶段） | 导演层（移植参考项目）按优先级决定先谢礼、先答问题还是欢迎进场：礼物 S/M/L 分档、连续送礼、回踩、榜首易主、金主/熟客/高财富等级分级欢迎、关注/粉丝团/分享/点赞、人数猛涨承接、产品提问、购买意向；跨场长期记忆；模板话术零延迟，配了 LLM 用 LLM 写词（超时自动兜底）；所有台词过合规过滤；Web 可看决策日志、改触发器 |
 | 产品知识库与讲品（第二阶段） | 上传 html / pdf / md 产品资料（可关联产品，或作为公共资料），自动解析、切块、建索引（SQLite FTS5 + jieba；可选向量混合检索）；观众问产品问题时只依据资料回答（配了 LLM 由 LLM 组织语言，没配就念资料原句），资料里没有就说「帮您确认 / 看商品详情 / 问客服」，不编造；讲解稿可一键用知识库生成（过合规、人工确认后才播），没有弹幕时按讲解稿轮播讲品，有互动先回应再断点续讲 |
+| 视频素材与直播画面（第二阶段） | 上传产品视频 / 背景图；直播场景页 `/scene`（竖屏 720×1280，给 OBS 用）= 背景 + 视频 + 数字人 + 产品卡片 + 字幕 + 常驻 AI 标识；视频可全屏 / 画中画 / 分屏、原声或静音，手动「立即播放」或讲品时自动插播；带原声时讲品暂停、数字人声音压低，播完回到数字人并续讲，数字人画面全程不断 |
 | 所有参数网页可改（第二阶段） | 「直播间设置」页按 schema 自动生成，标「即时生效 / 需重启」；导出/导入/历史回滚；写操作需口令 |
 
 ---
@@ -25,7 +26,7 @@
 live/                       服务层（Python 包）
   server.py                 FastAPI app 工厂 + 写操作鉴权中间件
   app_context.py            统一构造、注入所有服务（AppContext）
-  api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、console_ws）
+  api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、media、console_ws）
   core/                     统一事件模型 events、事件总线 bus、实现注册表 registry、可注入时钟 clock
   settings/                 设置中心：schema（所有配置项的单一来源）、store（三层合并 + 热更新 + 版本回滚）、env（.env 密钥）
   feed.py                   控制台推送（事件总线 → /ws/console，点赞/进场节流）
@@ -34,6 +35,7 @@ live/                       服务层（Python 包）
   host/                     主持人：host（编排）、composer（写词，接知识库）、session_tap
   knowledge/                产品知识库：loaders（md/html/pdf）、chunker、text（分词/查询/覆盖度/摘句）、index（fts/bm25/hybrid）、store、service
   products/                 产品库（products.json）、讲品轮播 script、讲解稿生成 generator
+  media/                    素材库 store（ffprobe + 封面）、直播场景 scene（布局 / 产品卡片 / 视频）
   danmaku/                  弹幕接入：manager（子进程管理）、process（子进程入口）、mock、replay、recorder、cookie；
     douyin/                 抖音：parse.py（protobuf → 统一事件，纯函数 + 连击聚合）、adapter.py（接管 vendor fetcher）
   manager.py                会话管理
@@ -56,6 +58,7 @@ live/                       服务层（Python 包）
 vendor/douyin_fetcher/      第三方 DouyinLiveWebFetcher（AGPL-3.0，原样复制不改；抖音改签名时整体替换）
 web/                        网页客户端（原生 ES modules，无需构建，直接由服务端提供）
   index.html  app.js（外壳/路由）  api.js  ui.js  player.js  style.css
+  scene.html  scene.js      直播场景页 /scene（OBS 浏览器源）
   pages/                    每页一个模块：console danmaku products media settings system offline
 docs/live/
   ARCHITECTURE.md           架构、线程模型、调度与音画同步原理
@@ -66,6 +69,7 @@ tests/live/
   test_runner_logic.py      真实推理后端逻辑测试（需 torch+CUDA，不需要权重，18 项）
   test_e2e_commerce.py      带货全链路（起 mock 服务后运行，16 项）
   test_e2e_products.py      讲品 + 知识库（起 mock 服务后运行，15 项）
+  test_e2e_scene.py         视频素材 + 直播场景（起 mock 服务后运行，需 ffmpeg，15 项）
   test_*.py                 pytest 单元/集成测试（python -m pytest tests/live -q -m "not e2e"）
 live_server.py              启动脚本
 start_live.bat / start_live_mock.bat
@@ -180,11 +184,20 @@ python live_server.py --config live/configs/live.yaml
 检索参数（后端、top_k、覆盖度门槛、同义词、切块长度）在「直播间设置 → 知识库与讲品」，改了即时生效；改切块参数后要在产品页点「重建索引」。
 开向量检索（`knowledge.backend: hybrid` + `knowledge.embedding.enabled`）要在 `.env` 配 `EMBEDDING_API_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`，**按调用计费**。
 
-### 5. 纯画面模式 / OBS 推流
+### 5. 直播画面（场景页）/ OBS 推流
 
-`http://127.0.0.1:8000/?view=1&session=default` 只显示画面（带字幕），打开即自动连接，断线自动重连。
-可以直接在 OBS 里加「浏览器源」填这个地址（宽高 512×512，勾选「通过 OBS 控制音频」），
-再由 OBS 推流到 B 站 / 视频号 / 快手，或用 OBS 虚拟摄像头接抖音直播伴侣。
+**完整直播画面**：OBS 里加「浏览器源」，地址 `http://127.0.0.1:8000/scene?session=default`，宽高 **720×1280**（= 设置 `scene.width/height`），
+勾选「通过 OBS 控制音频」。画面 = 背景 + 视频 + 数字人 + 当前产品卡片 + 字幕 + 左上角常驻「本直播间为 AI 数字人直播」（文案可改、不能关）。
+- 「视频素材」页上传产品视频（mp4 / webm），点「立即播放」选 全屏 / 画中画 / 分屏、原声 / 静音；图片可「设为背景」。
+- 产品与知识库 → 视频 标签把视频关联到产品，讲品时每讲完一轮自动插播一个（`products.video_slot`）。
+- 视频带原声时讲品暂停、数字人声音压低到 `scene.ducking`，播完回到数字人并从被打断的那段续讲；静音视频时数字人可以照常讲。
+- 位置、大小、卡片样式、字幕在「直播间设置 → 直播画面」改，即时生效；`/scene?debug=1` 显示布局框。控制台「直播画面」卡片可以嵌一个静音预览。
+- 普通浏览器打开要点一下页面才出声；OBS 浏览器源不需要。
+
+**只有数字人**：`http://127.0.0.1:8000/?view=1&session=default` 只显示数字人画面（带字幕），打开即自动连接，断线自动重连。
+可以直接在 OBS 里加「浏览器源」填这个地址（宽高 512×512，勾选「通过 OBS 控制音频」）。
+
+两种都可以再由 OBS 推流到 B 站 / 视频号 / 快手，或用 OBS 虚拟摄像头接抖音直播伴侣。
 URL 参数：`session=` 会话、`subs=0` 不显示字幕、`latency=0.3` 客户端缓冲秒数、`autoconnect=1`（完整界面也自动连接）。
 
 > 普通浏览器要求用户点击后才能出声，纯画面模式下点一下页面即可；OBS 浏览器源允许自动播放，不需要点。
@@ -223,6 +236,9 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 | `knowledge.backend` / `top_k` / `min_coverage` | fts / 4 / 0.5 | 检索后端（fts / bm25 / hybrid）；每次取几段资料；问题信息点被资料覆盖不到这个比例就说「帮您确认」 |
 | `knowledge.chunk_chars` / `chunk_overlap` / `synonyms` | 400 / 50 / 内置 | 切块长度与重叠（改了要重建索引）；检索同义词（「多少钱」→ 价格） |
 | `products.rotation_enabled` / `duration_s` / `segment_gap_s` / `require_confirmed_script` | 开 / 300 / 2 / 开 | 讲品轮播、每个产品讲多久、段间停顿、只播已确认的讲解稿 |
+| `products.video_slot` | end | 讲品中自动插播产品视频：end 每轮讲完 / start 每轮开讲前 / off 只手动 |
+| `scene.width` / `height` / `dh_rect` / `pip_rect` / `card_rect` | 720 / 1280 / … | 直播画面尺寸与各元素位置（画布像素） |
+| `scene.ducking` / `scene.video.default_mode` / `default_audio` | 0.3 / pip / video | 视频原声时数字人音量；「立即播放」默认布局与声音 |
 
 ### 画面僵硬怎么调
 
@@ -257,6 +273,15 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ## 已验证 / 未验证
 
+- ✅ 第二阶段 P6（视频素材 + 直播场景）：pytest 8 项（ffmpeg 现场生成测试视频：ffprobe 时长/分辨率/音轨、封面、图片、
+  拒绝非视频/超大/错误扩展名、重启后索引还在；场景状态机（假时钟）：各布局、play_id 对不上忽略、多个场景页回传只算一次、
+  静音视频不挡讲品、文件没音轨不算原声、按时长 + 1.5s 兜底结束、循环视频不自动结束、背景/画布/AI 标识不能为空、删素材停播；
+  主持人：带原声视频一开播打断讲品段、期间互动照常而讲品不讲、结束后续讲、静音视频讲品照常；讲品视频节点轮流播、丢失素材跳过、
+  视频节点不开口；接口：上传并关联、Range 206、封面、改关联、播放/停止/卡片开关、被引用删除 409 与 force、设置校验）；
+  e2e 15 项（`tests/live/test_e2e_scene.py`：画中画原声播放 → 画面 WebSocket 收到 scene 事件 → 讲品让路 → 场景页回传播完
+  → 回到数字人 + 产品卡片并续讲 → 静音全屏按时长自动结束 → 手动停止）。Edge 无头打开 `/scene` 截图核对四种布局
+  （数字人 + 卡片、画中画、分屏、全屏）、ducking、AI 标识常驻，以及视频素材页、控制台预览（1366 与窄屏无横向溢出、无 JS 报错）。
+  **OBS 浏览器源实际采集没有测**（本机没装 OBS），需要你在 OBS 里核对画面与声音。
 - ✅ 第二阶段 P5（产品知识库 + 讲品）：pytest 51 项（md 标题层级/表格、html 去噪、pdf 页码与小标题、空文档/损坏/扫描版/GBK 编码；
   切块长度与重叠、不跨章节；FTS5 与 BM25 两个后端下价格/保质期/尺码/发货/材质 5 问命中正确章节、按产品过滤与公共资料、
   资料没有判定、删除后检索不到、改切块参数后重建、入库进度事件、上传类型/大小/空文件/文件名改写/去重、后端热切换、

@@ -7,7 +7,7 @@
 | 新增/修改配置项 | `live/settings/schema.py`（加一行 `F(key, type, default, label, help, group=, apply=hot\|restart, min/max/choices)`，`DEFAULTS` 与 Web 设置表单都由它生成），再在 `live/configs/*.yaml` 覆盖 |
 | 设置的合并 / 校验 / 持久化 / 回滚 | `live/settings/store.py`（SettingsCenter）；`.env` 密钥 `live/settings/env.py` |
 | 服务的构造与注入 | `live/app_context.py`（AppContext）|
-| HTTP / WebSocket 接口 | `live/api/*.py`（按功能分文件：system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、console_ws），`live/server.py` 只是 app 工厂 + 写操作鉴权中间件 |
+| HTTP / WebSocket 接口 | `live/api/*.py`（按功能分文件：system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、media、console_ws），`live/server.py` 只是 app 工厂 + 写操作鉴权中间件 |
 | 事件总线 / 统一事件模型 / 注册表 / 可注入时钟 | `live/core/bus.py`、`events.py`、`registry.py`、`clock.py` |
 | 控制台推送（/ws/console）与节流 | `live/feed.py` |
 | 弹幕接入 | `live/danmaku/`：`base.py` 接口与注册、`manager.py` 子进程管理、`process.py` 子进程入口、`mock.py`、`replay.py`、`recorder.py`、`cookie.py`；抖音 `douyin/parse.py`（纯函数 + 连击聚合）、`douyin/adapter.py`（接管 vendor fetcher）|
@@ -16,6 +16,7 @@
 | 导演 / 局面 / 长期记忆 / 队列 / 意图 / 合规 | `live/interaction/director.py`、`state.py`、`memory.py`、`queue.py`、`intent.py`、`compliance.py`；`engine.py` 串起来 |
 | 主持人（谁先说、写词、打断讲品、人工插话） | `live/host/host.py`、`composer.py`、`session_tap.py` |
 | 知识库（解析、切块、检索、资料够不够、摘句） | `live/knowledge/`：`loaders/`（md/html/pdf）、`chunker.py`、`text.py`（分词、查询构造、覆盖度、摘句）、`index/`（fts / bm25 / embedding + hybrid）、`store.py`（kb.sqlite）、`service.py`（KnowledgeBase：入库、检索、retrieve 钩子、回答测试）；注册表在 `__init__.py` |
+| 视频素材、直播场景（布局、产品卡片、视频播放、讲品让路） | `live/media/store.py`（MediaStore：ffprobe、封面、media.json）、`live/media/scene.py`（SceneManager）；场景页 `web/scene.html` + `web/scene.js` |
 | 产品库、讲品轮播、讲解稿生成 | `live/products/`：`models.py`、`store.py`（products.json）、`script.py`（ProductScript）、`generator.py`；提示词 `live/interaction/policies/rag_prompt.md`、`script_prompt.md`（出厂值，Web 上改 `persona.rag_prompt` / `persona.script_prompt`） |
 | 直播调度、空闲/说话、打断、追加式请求、事件 | `live/session.py` |
 | 空闲音频策略 | `live/idle.py` |
@@ -51,6 +52,8 @@ python tests/live/test_e2e_mock.py          :: 依赖 requests websockets；33 �
 python tests/live/test_e2e_commerce.py      :: 16 项
 :: 1c) 讲品 + 知识库（同样先起 mock 服务）：上传样例资料 → 回答测试 → 生成并确认讲解稿 → 讲品 → 产品提问打断 → 断点续讲 → 跳段
 python tests/live/test_e2e_products.py      :: 15 项
+:: 1d) 视频素材 + 直播场景（同样先起 mock 服务，需要 ffmpeg）：上传 → 画中画原声播放（讲品让路）→ 场景页回传播完 → 续讲 → 静音全屏按时长结束
+python tests/live/test_e2e_scene.py         :: 15 项
 
 :: 2) 真实推理后端的逻辑测试（需要 torch+CUDA+官方依赖，不需要权重）
 python tests/live/test_runner_logic.py      :: 18 项
@@ -60,9 +63,13 @@ pytest 测试放 `tests/live/test_*.py`；夹具在 `tests/live/conftest.py`（`
 可指定来源 IP 和 `.env` 内容）。原有的两个脚本和 `test_e2e_*.py` 不让 pytest 收集，按上面的命令单独跑。
 时间相关逻辑用 `live/core/clock.py` 的 `FakeClock` 注入，不要 `sleep`。主持人相关测试用 `tests/live/fakes.py` 的假会话（`FakeSession`）。
 知识库测试夹具在 `tests/fixtures/kb/`：`product_a.md`（保温杯）、`product_b.html`（T 恤，带噪声标签）、`policy.pdf`（两页售后政策，
-由同目录 `make_fixtures.py` 不依赖第三方库生成），内容都是自造的。
+由同目录 `make_fixtures.py` 不依赖第三方库生成），内容都是自造的。视频测试（`test_p6_media.py`、`test_e2e_scene.py`）用 ffmpeg 现场生成
+几秒的 testsrc 视频，不入库；没有 ffmpeg 时 P6 的 pytest 跳过。`.gitattributes` 把 pdf/mp4/图片标成二进制（`core.autocrlf` 会改坏没有 NUL 字节的 PDF）。
 
-e2e 脚本**按 1 → 1b → 1c 的顺序跑**（或两次之间隔 2 分钟以上）：模拟注入事件后 2 分钟内导演仍认为"在播"，
+场景页的人工检查：Edge 无头 + `--remote-debugging-port`，打开 `/scene?session=default&debug=1`（`window.__scene` 暴露当前快照和播放器），
+调 `POST /api/sessions/default/scene/video` 切不同 mode 后截图。
+
+e2e 脚本**按 1 → 1b → 1c → 1d 的顺序跑**（或两次之间隔 2 分钟以上）：模拟注入事件后 2 分钟内导演仍认为"在播"，
 会出冷场话术和送礼回踩，紧接着跑 `test_e2e_mock.py` 会让"空闲帧不带说话标记"一项失败。各 e2e 脚本跑完会删掉自己建的产品/资料/测试观众，
 并把改过的设置恢复原样（原来没被 Web 覆盖的键用 reset 去掉覆盖）。
 

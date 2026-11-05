@@ -144,6 +144,7 @@ AppContext（live/app_context.py）
   ├─ DanmakuManager + Recorder（P2）
   ├─ ProductStore / ProductScript / ScriptGenerator（P5，live/products/）  产品库、讲品轮播、讲解稿生成
   ├─ KnowledgeBase（P5，live/knowledge/）  文档入库、检索、给写词的 retrieve(cue) 钩子
+  ├─ MediaStore / SceneManager（P6，live/media/）  素材库、每路会话的直播场景（布局 / 产品卡片 / 视频）
   ├─ ViewerMemory / CueQueue / InteractionEngine（P4，live/interaction/）
   ├─ Compliance / Composer / Host（P4，live/host/；Composer 注入 KnowledgeBase.retrieve，Host 注入 ProductScript）
   └─ EventFeed（live/feed.py）         总线 → /ws/console（Web 控制台推送）
@@ -167,7 +168,9 @@ AppContext（live/app_context.py）
 | `host.action` | InteractionEngine.update（cue 状态变化：排队 → 写词 → 播报 → 已说 / 被打断 / 丢弃） | EventFeed（决策日志、控制台「现在」） |
 | `session.event` | SessionTap（会话的 speak_done / interrupted / playback …） | Host |
 | `kb.ingest` | KnowledgeBase（文档 queued → parsing → indexing → ready / failed / deleted / moved；索引重建） | EventFeed（产品页刷新资料表） |
-| `products.changed` | ProductStore（新建 / 修改 / 讲解稿 / 排序 / 删除 / 切换当前产品） | EventFeed（产品页、控制台「当前产品」） |
+| `products.changed` | ProductStore（新建 / 修改 / 讲解稿 / 排序 / 删除 / 切换当前产品） | EventFeed（产品页、控制台「当前产品」）、SceneManager（刷新产品卡片） |
+| `media.changed` | MediaStore（上传 / 改名 / 删除） | EventFeed（视频素材页） |
+| `scene.changed` | SceneManager（视频开始 / 结束 / 停止、卡片与字幕开关、设置变更、当前产品变化） | Host（带原声视频开播 → 讲品让路）、EventFeed（控制台、视频素材页「正在播放」）；同时推给该会话画面 WebSocket（场景页） |
 
 ### 9.2 设置中心与热更新
 
@@ -384,3 +387,41 @@ LLM 慢了 / 挂了 / 没配置一律用触发器的兜底话术，不冷场。
 - 讲品段 cue：`event=product_rotation`、`kind=product`、优先级 `products.priority`（3）、`interruptible`；
   ≥ `host.interrupt_priority`（50）的互动（礼物、产品提问 52、购买意向 55）打断讲品，低于它的排队等这段讲完。
 
+## 14. 视频素材与直播场景（第二阶段 P6）
+
+```
+视频素材页上传 mp4/webm（或背景图）→ MediaStore：存 live_data/media/<随机ID>.<ext>，ffprobe 取时长/分辨率/音轨，ffmpeg 截封面
+「立即播放」/ 讲品视频节点 → SceneManager.play_video(sid, media_id, mode, audio)
+   → 新 play_id → scene.changed（总线）+ {"type":"scene", scene} 推给 /ws/sessions/{sid} 的所有客户端
+场景页 /scene（OBS 浏览器源，720×1280）：连同一条画面 WebSocket，数字人画面照常收（player.js），
+   收到 scene 事件切布局、播视频；播完回传 {"type":"scene.video_ended", play_id}
+服务端兜底：没人回传也按时长 + 1.5s 结束（loop 的要手动停）→ scene.changed(video_ended) → 回到数字人
+```
+
+### 14.1 场景页的层与布局
+
+层（下 → 上）：背景（`scene.background`：默认渐变 / 纯色 / 素材库图片）→ `<video>` → 数字人画布 → 产品卡片 → 字幕 → **AI 标识（常驻）**。
+画布尺寸 `scene.width × scene.height`（默认竖屏 720×1280），按窗口等比缩放居中；坐标都是画布像素。
+
+| layout | 视频 | 数字人 | 产品卡片 |
+|---|---|---|---|
+| `dh_full` / `dh_with_card` | 无 | `scene.dh_rect` | 有当前产品且 `scene.card.enabled` 时显示在 `scene.card_rect` |
+| `video_pip`（mode=pip） | 铺满画布 | 缩到 `scene.pip_rect`（圆角描边） | 显示 |
+| `split`（mode=split） | 上半屏 | 下半屏 | 紧凑样式，放到视频那一半底部（不挡脸） |
+| `video_full`（mode=full） | 铺满画布 | 隐藏（声音照常） | 隐藏 |
+
+- AI 标识文案来自 `compliance.ai_disclosure`，**不能关闭**：设置校验不允许留空，快照里为空时也回落到默认文案。
+- 视频带原声（`audio=video` 且文件有音轨）：数字人音量 × `scene.ducking`（默认 0.3）；静音视频数字人音量不变。
+- 晚打开 / 重连的场景页按快照里的 `ts - started_at` 跳到服务端已播到的位置；没有用户手势时带声音的自动播放被拦就先静音播并提示点击。
+- `preview=1`（控制台里嵌的预览）整页静音，避免和控制台播放器重复出声；画面按音频时钟出帧，浏览器没允许音频时预览也要点一下。
+- 场景页回传 `scene.video_ended` **不需要写权限**（OBS 浏览器源一般不带口令），只会结束 play_id 对得上的那个视频。
+
+### 14.2 主持人与视频
+
+- 带原声的视频播放期间 `Host.script_active()` 为假：不讲品；视频一开播（`scene.changed` reason=video_started 且 blocks_script）
+  正在讲的讲品段被打断，视频结束后从这段续讲（断点续讲同 §13.3）。互动、人工插话照常（声音被 ducking 压低）。
+- 静音视频不挡讲品：数字人可以对着视频讲解。
+- 讲品视频节点：`products.video_slot` = `end`（默认，每讲完一轮讲解稿插播一个）/ `start`（每轮开讲前）/ `off`；
+  ProductScript 产出 `kind=video` 的 cue，主持人交给 `SceneManager.play_video`（布局/声音取 `scene.video.default_*`），不开口，
+  决策日志 `text_source=video`；产品关联的多个视频轮流播，素材被删了就跳过。
+- 数字人推理不受影响：视频期间生成线程照常用空闲音频出帧，场景页切回来时画面是连续的。

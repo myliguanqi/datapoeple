@@ -1,4 +1,4 @@
-// 产品与知识库：左边产品列表（拖动排序、上架开关、讲解中标记、公共资料），右边选中产品的 基本信息 / 讲解稿 / 资料 / 测试。
+// 产品与知识库：左边产品列表（拖动排序、上架开关、讲解中标记、公共资料），右边选中产品的 基本信息 / 讲解稿 / 资料 / 视频 / 测试。
 // 接口：/api/products*、/api/kb/*、/api/host/product/*（见 docs/live/API.md）。kb.ingest、products.changed 经 /ws/console 实时刷新。
 import { badge, busy, card, cardHead, confirmDialog, empty, fmtDateTime, h, tabs, toast } from '../ui.js';
 
@@ -168,7 +168,8 @@ export async function mount(el, app) {
       await refreshList();
       renderDetail();
     };
-    const TABS = [{ id: 'info', label: '基本信息' }, { id: 'script', label: '讲解稿' }, { id: 'docs', label: '资料' }, { id: 'test', label: '测试' }];
+    const TABS = [{ id: 'info', label: '基本信息' }, { id: 'script', label: '讲解稿' }, { id: 'docs', label: '资料' },
+      { id: 'video', label: '视频' }, { id: 'test', label: '测试' }];
     let cur = store(TAB_KEY) || 'info';
     if (!TABS.some((t) => t.id === cur)) cur = 'info';
     let shown = null;
@@ -189,7 +190,7 @@ export async function mount(el, app) {
       for (const fn of detailCleanup) fn();
       detailCleanup = [];
       pane.replaceChildren();
-      ({ info: infoTab, script: scriptTab, docs: docsTab, test: testTab })[id](pane, p.id, p);
+      ({ info: infoTab, script: scriptTab, docs: docsTab, video: videoTab, test: testTab })[id](pane, p.id, p);
     });
     pane.before(t.el);
   }
@@ -387,6 +388,34 @@ export async function mount(el, app) {
     app.events.addEventListener('topic:kb.ingest', onIngest);
     detailCleanup.push(() => app.events.removeEventListener('topic:kb.ingest', onIngest));
     load();
+  }
+
+  // ---- 视频 ----
+  async function videoTab(pane, pid, p) {
+    const vids = await app.api.get('/api/media?kind=video');
+    const chosen = new Set(p.video_ids || []);
+    const save = h('button', { type: 'button', class: 'primary' }, '保存');
+    const rows = vids.map((v) => {
+      const cb = h('input', { type: 'checkbox', checked: chosen.has(v.id) });
+      cb.onchange = () => (cb.checked ? chosen.add(v.id) : chosen.delete(v.id));
+      const play = h('button', { type: 'button', class: 'small' }, '立即播放');
+      play.onclick = () => busy(play, () => app.api.post(`/api/sessions/${encodeURIComponent(app.sid)}/scene/video`, { media_id: v.id })
+        .then(() => toast(`正在播放「${v.name}」`, 'ok')));
+      return h('div', { class: 'row' }, h('label', { class: 'inline grow' }, cb,
+        v.cover_url ? h('img', { src: v.cover_url, alt: '', style: { width: '64px', height: '36px', objectFit: 'cover', borderRadius: '4px' } }) : '',
+        h('span', {}, v.name), h('span', { class: 'hint' }, ` ${Math.round(v.duration_s || 0)}s · ${v.has_audio ? '有声' : '无声'}`)), play);
+    });
+    pane.append(h('p', { class: 'hint' }, '勾选这个产品的视频（从「视频素材」页上传）。讲品时按「直播间设置 → 知识库与讲品 → 讲品中自动插播视频」自动插播，多个视频轮流播；',
+      '带原声播放时暂停讲品，播完接着讲。'),
+    ...(rows.length ? rows : [empty('素材库里还没有视频', '先到「视频素材」页上传')]),
+    rows.length ? h('div', { class: 'row' }, h('span', { class: 'grow' }), save) : '');
+    save.onclick = () => busy(save, async () => {
+      const keep = (p.video_ids || []).filter((id) => chosen.has(id));
+      const add = vids.map((v) => v.id).filter((id) => chosen.has(id) && !keep.includes(id));
+      await app.api.put(`/api/products/${pid}`, { video_ids: [...keep, ...add] });
+      p.video_ids = [...keep, ...add];
+      toast('已保存', 'ok');
+    });
   }
 
   // ---- 测试 ----

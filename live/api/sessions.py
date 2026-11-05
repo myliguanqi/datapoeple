@@ -181,6 +181,10 @@ async def ws_session(ws: WebSocket, sid: str):
                 if t == "ping":
                     await ws.send_text(json.dumps({"type": "pong", "ts": msg.get("ts")}))
                     continue
+                if t == "scene.video_ended":
+                    # 场景页（OBS 浏览器源一般不带口令）回传视频播完：只结束 play_id 对得上的那个视频，不需要写权限
+                    ctx.scenes.page_ended(sid, str(msg.get("play_id") or ""))
+                    continue
                 if t in ("speak", "interrupt") and not can_write:
                     await ws.send_text(json.dumps({"type": "error", "message": "没有写权限（需要管理口令 ?token=）"},
                                                   ensure_ascii=False))

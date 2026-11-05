@@ -21,7 +21,8 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | 地址 | 说明 |
 |---|---|
 | `/` | 完整控制台（侧边栏分页，hash 路由：`#/console` 直播控制台、`#/danmaku` 弹幕互动、`#/products` 产品与知识库、`#/media` 视频素材、`#/settings` 直播间设置、`#/system` 数字人与系统、`#/offline` 离线视频）。参数：`session=`、`autoconnect=1`、`latency=0.3`、`subs=0` |
-| `/?view=1&session=default` | 纯画面模式：全屏画面 + 字幕，自动连接、断线重连，给 OBS 浏览器源用 |
+| `/?view=1&session=default` | 纯画面模式：全屏画面 + 字幕，自动连接、断线重连（只有数字人） |
+| `/scene?session=default` | **直播场景页**（OBS 浏览器源，宽高 = `scene.width × scene.height`，默认 720×1280）：背景 + 视频 + 数字人 + 产品卡片 + 字幕 + 常驻 AI 标识；参数 `w=&h=`（覆盖画布尺寸）、`debug=1`（布局框和状态）、`latency=0.3`、`preview=1`（静音预览） |
 | `/web/player.js` | 播放器模块（ES module），可在自己的页面里复用，用法见文件头注释 |
 
 ## 系统
@@ -104,6 +105,22 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 
 写词时的知识库规则见 ARCHITECTURE §13：资料够就用资料（LLM 写或念原句），不够就说「帮您确认 / 看商品详情 / 问客服」。
 
+## 视频素材与直播场景
+
+| 方法 | 路径 | 请求 | 说明 |
+|---|---|---|---|
+| GET | `/api/media?kind=video\|image` | | 素材列表（新的在前）：`{id, name, ext, kind(video/image), size, mime, width, height, duration_s, has_audio, codec, audio_codec, tags, created_at, url, cover_url, product_ids, is_background}` |
+| POST | `/api/media` | multipart：`files`（可多个；mp4/webm/mov/m4v/png/jpg/jpeg/webp）、`product_id?`（上传的视频同时关联到这个产品） | 边收边写盘，大小上限 `scene.media_max_mb`；ffprobe 认不出的、没有画面的拒绝。单个文件不合格的那项 `status=rejected` + `error`；全部不合格 400 |
+| GET | `/api/media/{id}` | | 详情 |
+| GET | `/api/media/{id}/file` | | 文件本身（支持 Range，`<video>` 可拖进度；GET 不需要口令，OBS 可直接加载） |
+| GET | `/api/media/{id}/cover` | | 视频封面 jpg（没有 404） |
+| PUT | `/api/media/{id}` | `{name?, tags?, product_ids?}` | 改名 / 标签 / 关联产品（关联写在产品的 `video_ids` 上） |
+| DELETE | `/api/media/{id}?force=false` | | 被产品引用或正被用作背景时 409（`detail` 说明被谁用）；`force=true` 删除并解除关联、清空背景；正在播放的会被停掉 |
+| GET | `/api/sessions/{sid}/scene` | | 场景快照：`{session_id, version, layout(dh_full/dh_with_card/video_full/video_pip/split), reason, canvas{width, height, background{color}\|{image}\|null, dh_rect, pip_rect, card_rect}, card{enabled, style, product{id, name, price_text, selling_points[≤3]}}, video{play_id, media_id, name, url, mode, audio, loop, duration_s, has_audio, width, height, started_at, source(manual/script)}\|null, subtitle{enabled}, ducking, disclosure, blocks_script, ts}`。会话还没建也能查（场景状态与会话独立） |
+| PUT | `/api/sessions/{sid}/scene` | `{card_visible?, subtitle?}` | 临时开关产品卡片 / 字幕（不改设置） |
+| POST | `/api/sessions/{sid}/scene/video` | `{media_id, mode?(full/pip/split), audio?(video/mute), loop?}` | 立即播放（没给的用 `scene.video.default_*`）；返回新快照。素材不存在 404，是图片或参数不对 400 |
+| POST | `/api/sessions/{sid}/scene/video/stop` | | 停止视频，回到数字人 |
+
 ## 观众（长期记忆）
 
 | 方法 | 路径 | 说明 |
@@ -120,7 +137,8 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 `{"topic": "settings.changed", "ts": 1730000000.0, "data": {...}}`。当前推送的主题：`settings.changed`、`env.changed`、`danmaku.status`、`live.event`、`interaction.cue`（`Cue.to_dict()`）、
 `host.action`（决策日志条目，字段同 `/api/interaction/log`，状态每变一次推一次）、
 `kb.ingest`（`{kind: "doc", doc_id, name, product_id, status(queued/parsing/indexing/ready/failed/deleted/moved), progress, chunks, error, ms}`
-或索引重建 `{kind: "index", status: "rebuilt", backend}`）、`products.changed`（`{reason(create/update/script/order/delete/active), product_id, active_id}`）。
+或索引重建 `{kind: "index", status: "rebuilt", backend}`）、`products.changed`（`{reason(create/update/script/order/delete/active), product_id, active_id}`）、
+`media.changed`（`{reason(add/update/delete), media_id}`）、`scene.changed`（`{session_id, reason, scene: 快照}`，reason 见下表 `scene` 事件）。
 
 `live.event` 推给 Web 前节流：一般事件 `data` 就是 `LiveEvent.to_dict()`；点赞合并为
 `{"type": "like_batch", "count", "events", "users": [{nickname, count}], "total", "ts"}`，普通进场合并为
@@ -244,6 +262,7 @@ asyncio.run(main())
 | `warning` | message | 例如生成速度跟不上实时 |
 | `error` | where, message, fatal? | TTS/生成/控制失败；fatal=true 表示会话已停止 |
 | `closed` | | 会话关闭（随后连接断开） |
+| `scene` | reason, scene（同 `GET /api/sessions/{sid}/scene`） | 场景变化：`video_started` / `video_ended`（播完，场景页回传或服务端按时长）/ `video_stopped` / `video_deleted` / `patched` / `settings` / `product` |
 
 所有事件都带 `session_id` 和 `ts`（服务端 Unix 时间）。
 
@@ -253,7 +272,9 @@ asyncio.run(main())
 {"type": "speak", "text": "...", "voice": null, "interrupt": false, "request_id": null, "speed": null}
 {"type": "interrupt"}
 {"type": "ping", "ts": 123}
+{"type": "scene.video_ended", "play_id": "..."}
 ```
 
 分别回 `{"type": "ack", "for": "speak", "request_id": ...}`、`{"type": "ack", "for": "interrupt", ...}`、`{"type": "pong", "ts": 123}`。
 没有写权限时 speak / interrupt 回 `{"type": "error", "message": "没有写权限…"}`（见上文「鉴权」）。
+`scene.video_ended` 是场景页回报"这个视频播完了"，**不需要写权限**、没有回复，只结束 play_id 对得上的视频。

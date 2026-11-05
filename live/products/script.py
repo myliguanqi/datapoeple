@@ -9,6 +9,8 @@
 
 按时长轮换：当前产品讲了 ≥ duration_s（产品单独设置，否则 products.duration_s）后，在段落边界换到下一个启用的产品。
 只播已确认的段（products.require_confirmed_script，默认开）。时间从可注入时钟取（测试用假时钟）。
+视频节点（products.video_slot）：产品关联了视频时，每讲完一轮（end）或每轮开讲前（start）产出一条 kind="video" 的 cue，
+主持人交给场景播放（布局/声音用 scene.video.default_*），多个视频轮流播。
 """
 from __future__ import annotations
 
@@ -22,11 +24,14 @@ _PH = re.compile(r"\{(product|price|anchor|shop)\}")
 
 
 class ProductScript:
-    def __init__(self, cfg: dict, store, clock: Clock = SYSTEM_CLOCK, bus=None):
+    def __init__(self, cfg: dict, store, clock: Clock = SYSTEM_CLOCK, bus=None, video_lookup=None):
         self.cfg = cfg
         self.store = store
         self.clock = clock
         self.bus = bus
+        self.video_lookup = video_lookup or (lambda media_id: None)     # media_id -> 素材 dict（kind=video）| None
+        self.video_round = -1                                           # 已经插播过视频的轮次
+        self.video_count = 0                                            # 这个产品插播过几次（多个视频轮流）
         self._lock = threading.RLock()
         self.product_id: str | None = None
         self.index = 0
@@ -73,11 +78,14 @@ class ProductScript:
     def current_info(self) -> dict | None:
         """给话术占位符 {product}、知识库检索范围用。"""
         p = self.resolve()
-        return None if p is None else {"id": p.id, "name": p.name, "price_text": p.price_text}
+        return None if p is None else {"id": p.id, "name": p.name, "price_text": p.price_text,
+                                       "selling_points": list(p.selling_points)}
 
     def _switch(self, pid: str | None, persist: bool = True) -> None:
         self.product_id = pid
         self.index = 0
+        self.video_round = -1
+        self.video_count = 0
         self.started_at = self.clock.now()
         self.inflight = None
         if persist:
@@ -128,6 +136,10 @@ class ProductScript:
             p = self.current()
             if p is None:
                 return None
+            if self.pc["video_slot"] == "end":                      # 讲完一轮：先插播这个产品的视频，再考虑换产品
+                cue = self._video_cue(p, need_started=True)
+                if cue is not None:
+                    return cue
             if now - self.started_at >= self.duration(p):           # 到时间了：段落边界换下一个产品
                 cands = self.candidates()
                 ids = [c.id for c in cands]
@@ -138,6 +150,10 @@ class ProductScript:
                     p = nxt
                 else:
                     self.started_at = now
+            if self.pc["video_slot"] == "start":
+                cue = self._video_cue(p, need_started=False)
+                if cue is not None:
+                    return cue
             segs = self.playable(p)
             if not segs:
                 return None
@@ -147,8 +163,29 @@ class ProductScript:
                       fallback_text=self.render(seg.text, p), interruptible=True, product_id=p.id,
                       reason=f"讲品「{p.name}」第 {idx + 1}/{len(segs)} 段", emotion="自然介绍", created_at=now,
                       source={"product_id": p.id, "segment_id": seg.id, "index": idx, "total": len(segs)})
-            self.inflight = {"cue_id": cue.id, "index": idx, "product_id": p.id}
+            self.inflight = {"cue_id": cue.id, "index": self.index, "product_id": p.id}    # 原始计数（÷段数 = 第几轮）
             return cue
+
+    def videos(self, p) -> list:
+        return [v for v in (self.video_lookup(mid) for mid in p.video_ids) if v and v.get("kind") == "video"]
+
+    def _video_cue(self, p, need_started: bool) -> Cue | None:
+        """在一轮的边界（index 是段数的整数倍）且这一轮还没播过视频时产出视频 cue。"""
+        segs = self.playable(p)
+        vids = self.videos(p)
+        if not segs or not vids or self.index % len(segs) != 0 or (need_started and self.index == 0):
+            return None
+        rnd = self.index // len(segs)
+        if self.video_round == rnd:
+            return None
+        v = vids[self.video_count % len(vids)]
+        sc = self.cfg["scene"]["video"]
+        cue = Cue(event="video_slot", kind="video", priority=int(self.pc["priority"]), product_id=p.id,
+                  reason=f"讲品「{p.name}」插播视频「{v['name']}」", created_at=self.clock.now(), fallback_text="",
+                  situation={"media_id": v["id"], "name": v["name"], "mode": sc["default_mode"], "audio": sc["default_audio"]},
+                  source={"product_id": p.id, "media_id": v["id"]})
+        self.inflight = {"cue_id": cue.id, "index": self.index, "product_id": p.id, "video_round": rnd}
+        return cue
 
     def _match(self, cue) -> bool:
         return self.inflight is not None and self.inflight["cue_id"] == cue.id
@@ -156,6 +193,12 @@ class ProductScript:
     def on_done(self, cue) -> None:
         with self._lock:
             if not self._match(cue):
+                return
+            if "video_round" in self.inflight:                      # 视频节点：记下这一轮播过了，段落不前进
+                self.video_round = self.inflight["video_round"]
+                self.video_count += 1
+                self.inflight = None
+                self.last_end = self.clock.now()
                 return
             self.index = self.inflight["index"] + 1
             self.inflight = None
@@ -166,7 +209,11 @@ class ProductScript:
         with self._lock:
             if not self._match(cue):
                 return
-            self.index = self.inflight["index"]          # 断点续讲：这一段回头重讲
+            if "video_round" in self.inflight:
+                self.video_round = self.inflight["video_round"]     # 视频没播成也不反复重试
+                self.video_count += 1
+            else:
+                self.index = self.inflight["index"]          # 断点续讲：这一段回头重讲
             self.inflight = None
             self.last_end = -1e9
 

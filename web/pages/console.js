@@ -31,6 +31,11 @@ export async function mount(el, app) {
   const prevBtn = h('button', { type: 'button', class: 'small' }, '上一个');
   const nextBtn = h('button', { type: 'button', class: 'small' }, '下一个');
   const skipBtn = h('button', { type: 'button', class: 'small' }, '下一段');
+  const videoBtn = h('button', { type: 'button', class: 'small' }, '播视频');
+  const sceneLine = h('div', { class: 'hint' });
+  const previewBtn = h('button', { type: 'button', class: 'small' }, '显示预览');
+  const stopVideoBtn = h('button', { type: 'button', class: 'small danger' }, '停止视频');
+  const previewBox = h('div');
   const scriptLine = h('div', { class: 'hint' });
   const feedBody = h('tbody');
 
@@ -43,7 +48,9 @@ export async function mount(el, app) {
           h('div', { class: 'row' }, connectBtn,
             h('label', { class: 'inline' }, '缓冲', latency, latencyVal),
             h('label', { class: 'inline' }, '音量', volume)),
-          clientStats, serverStats)),
+          clientStats, serverStats),
+        card(cardHead('直播画面（场景页）', stopVideoBtn, previewBtn,
+          h('a', { href: `/scene?session=${encodeURIComponent(app.sid)}`, target: '_blank' }, '新窗口打开')), sceneLine, previewBox)),
       h('div', { class: 'stack' },
         card(cardHead('现在', pauseIaBtn, pauseScBtn, interruptBtn), h('div', {}, h('span', { class: 'muted' }, '正在说：'), playing),
           playingMeta, nextLine),
@@ -51,7 +58,7 @@ export async function mount(el, app) {
           h('div', { class: 'row' }, voiceSel, h('label', { class: 'inline' }, interruptFirst, '先打断'),
             h('span', { class: 'grow' }), speakBtn)),
         card(cardHead('当前产品', h('a', { href: '#/products' }, '产品与知识库 →')),
-          h('div', { class: 'row' }, productSel, prevBtn, nextBtn, skipBtn), scriptLine),
+          h('div', { class: 'row' }, productSel, prevBtn, nextBtn, skipBtn, videoBtn), scriptLine),
         card(cardHead('实时数据', h('a', { href: '#/danmaku' }, '弹幕互动 →')), statsBox),
         card('会话事件', log.el))),
     card(cardHead('弹幕流（最近 50 条，完整版在「弹幕互动」页）'),
@@ -199,6 +206,50 @@ export async function mount(el, app) {
   prevBtn.onclick = () => busy(prevBtn, () => app.api.post('/api/host/product/prev').then(refreshHost));
   nextBtn.onclick = () => busy(nextBtn, () => app.api.post('/api/host/product/next').then(refreshHost));
   skipBtn.onclick = () => busy(skipBtn, () => app.api.post('/api/host/script/next').then(refreshHost));
+  videoBtn.onclick = () => busy(videoBtn, async () => {
+    const pid = productSel.value;
+    const p = pid ? await app.api.get(`/api/products/${pid}`) : null;
+    if (!p || !p.video_ids.length) {
+      toast('当前产品还没有关联视频（产品与知识库 → 视频）', 'warn');
+      return;
+    }
+    await app.api.post(`/api/sessions/${encodeURIComponent(app.sid)}/scene/video`, { media_id: p.video_ids[0] });
+  });
+
+  // ---- 场景：预览（iframe 嵌 /scene?preview=1，静音，不和上面的播放器重复出声）与正在播放 ----
+  const MODE = { full: '全屏', pip: '画中画', split: '分屏' };
+  const LAYOUT = { dh_full: '数字人', dh_with_card: '数字人 + 产品卡片', video_full: '视频全屏', video_pip: '视频 + 数字人画中画', split: '上视频下数字人' };
+  function renderScene(sc) {
+    const v = sc.video;
+    stopVideoBtn.hidden = !v;
+    sceneLine.textContent = `布局：${LAYOUT[sc.layout] || sc.layout} · ${sc.canvas.width}×${sc.canvas.height}`
+      + (v ? ` · 正在播放「${v.name}」${MODE[v.mode]}${v.audio === 'video' && v.has_audio ? '（原声，讲品暂停）' : '（静音）'}` : '');
+    const fr = previewBox.querySelector('iframe');
+    if (fr) fr.style.aspectRatio = `${sc.canvas.width} / ${sc.canvas.height}`;
+  }
+  async function refreshScene() {
+    try {
+      renderScene(await app.api.get(`/api/sessions/${encodeURIComponent(app.sid)}/scene`));
+    } catch { /* ignore */ }
+  }
+  previewBtn.onclick = () => {
+    if (previewBox.firstChild) {
+      previewBox.replaceChildren();
+      previewBtn.textContent = '显示预览';
+      return;
+    }
+    previewBox.append(h('iframe', { class: 'scene-preview', src: `/scene?session=${encodeURIComponent(app.sid)}&preview=1`, allow: 'autoplay',
+      title: '直播画面预览' }));
+    previewBtn.textContent = '隐藏预览';
+    refreshScene();
+  };
+  stopVideoBtn.onclick = () => busy(stopVideoBtn, () => app.api.post(`/api/sessions/${encodeURIComponent(app.sid)}/scene/video/stop`));
+  on(app.events, 'topic:scene.changed', (ev) => ev.detail.data.session_id === app.sid && renderScene(ev.detail.data.scene));
+  on(app.events, 'session', () => {
+    refreshScene();
+    if (previewBox.firstChild) previewBox.querySelector('iframe').src = `/scene?session=${encodeURIComponent(app.sid)}&preview=1`;
+  });
+  refreshScene();
   on(app.events, 'topic:products.changed', () => {
     productsLoading = null;
     loadProducts();

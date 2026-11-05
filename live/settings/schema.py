@@ -370,9 +370,33 @@ FIELDS += [
       **_KB),
     F("products.priority", "int", 3, "讲品段优先级", "讲品段在主持人里的优先级（很低：有互动先互动）", min=0, max=100, **_KB),
     F("products.generate_segments", "int", 5, "生成讲解稿段数", min=2, max=12, **_KB),
+    F("products.video_slot", "enum", "end", "讲品中自动插播视频", "产品关联了视频时，每讲完一轮讲解稿（end）或每轮开讲前（start）播一个；off = 只手动播",
+      choices=("off", "start", "end"), **_KB),
     F("persona.rag_prompt", "text", _read_policy("rag_prompt.md"), "知识库回答规则", "回答产品问题时附加在人设提示词后面（带「资料」时）", **_PS),
     F("persona.script_prompt", "text", _read_policy("script_prompt.md"), "讲解稿生成提示词", "「用知识库生成讲解稿」时的系统提示；{anchor} {shop_line} 会被替换",
       **_PS),
+]
+
+
+# ============================================================================ 直播画面（第二阶段 P6）
+_SC = dict(group="scene")
+FIELDS += [
+    F("scene.width", "int", 720, "画布宽度", "场景页 /scene 的画面尺寸（竖屏 9:16 默认 720×1280）；OBS 浏览器源设成同样的宽高", min=240, max=4096, **_SC),
+    F("scene.height", "int", 1280, "画布高度", min=240, max=4096, **_SC),
+    F("scene.background", "str", "", "背景", "留空 = 默认深色渐变；#RRGGBB = 纯色；media:素材ID = 素材库里的图片（视频素材页「设为背景」）；也可填图片网址", **_SC),
+    F("scene.dh_rect", "dict", {"x": 0, "y": 160, "w": 720, "h": 720}, "数字人位置", "平时数字人画面的位置和大小（画布像素，x/y 左上角）", **_SC),
+    F("scene.pip_rect", "dict", {"x": 440, "y": 60, "w": 260, "h": 260}, "画中画位置", "视频画中画模式下数字人缩小到这里", **_SC),
+    F("scene.card_rect", "dict", {"x": 40, "y": 900, "w": 640, "h": 300}, "产品卡片位置", **_SC),
+    F("scene.card.enabled", "bool", True, "显示产品卡片", "当前讲解产品的名称、价格、卖点（视频全屏时不显示）", **_SC),
+    F("scene.card.style", "enum", "default", "产品卡片样式", "default 完整（名称 + 价格 + 卖点）/ compact 只有名称和价格", choices=("default", "compact"),
+      **_SC),
+    F("scene.subtitle.enabled", "bool", True, "显示字幕", **_SC),
+    F("scene.ducking", "float", 0.3, "视频原声时数字人音量", "播放带原声的视频时，数字人声音乘这个系数（0 = 静音，1 = 不压低）", min=0, max=1, **_SC),
+    F("scene.video.default_mode", "enum", "pip", "视频默认布局", "full 全屏 / pip 画中画（数字人缩在角落）/ split 上视频下数字人",
+      choices=("full", "pip", "split"), **_SC),
+    F("scene.video.default_audio", "enum", "video", "视频默认声音", "video 放原声（期间暂停讲品）/ mute 静音（数字人可以继续讲）", choices=("video", "mute"),
+      **_SC),
+    F("scene.media_max_mb", "int", 1024, "素材大小上限（MB）", "单个视频/图片上传上限", min=1, max=10240, **_SC),
 ]
 
 
@@ -557,4 +581,14 @@ def cross_check(get) -> dict:
     errors = {}
     if get("idle.mode") == "file" and not get("idle.file"):
         errors["idle.file"] = "空闲音频选了 file 模式，必须填空闲音频文件"
+    if not str(get("compliance.ai_disclosure") or "").strip():
+        errors["compliance.ai_disclosure"] = "AI 标识不能为空（平台要求显著标识，只能改文案、不能关闭）"
+    for key in ("scene.dh_rect", "scene.pip_rect", "scene.card_rect"):
+        r = get(key)
+        try:
+            ok = isinstance(r, dict) and all(float(r[k]) >= 0 for k in "xywh") and float(r["w"]) > 0 and float(r["h"]) > 0
+        except (KeyError, TypeError, ValueError):
+            ok = False
+        if not ok:
+            errors[key] = '应为 {"x": 0, "y": 0, "w": 正数, "h": 正数}（画布像素）'
     return errors

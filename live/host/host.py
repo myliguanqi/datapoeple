@@ -10,7 +10,10 @@
 
 人工插话：say(text, interrupt) → kind=manual、优先级 host.manual_priority 的 cue；interrupt=true 先打断当前播报。
 暂停：host.pause_interaction（互动 cue 不说、队列清空）、host.pause_script（讲品不讲）。
-script 接口（P5 的 ProductScript 实现）：active() -> bool、next_segment() -> Cue | None、on_interrupted(cue)、on_done(cue)。
+script 接口（ProductScript 实现）：active() -> bool、next_segment() -> Cue | None、on_interrupted(cue)、on_done(cue)。
+  next_segment 也可能给出 kind="video" 的视频节点 → 交给场景（scenes.play_video），不开口。
+场景（SceneManager，可为 None）：会话正在放带原声的视频时不讲品（script_active 为假），视频一开播就打断正在讲的讲品段；
+  互动、人工插话照常（数字人声音在场景页按 scene.ducking 压低）。
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ from live.interaction.queue import CueQueue
 
 class Host:
     def __init__(self, cfg: dict, bus, sessions, queue: CueQueue, composer: Composer, engine=None,
-                 clock: Clock = SYSTEM_CLOCK, script=None, start_thread: bool = True):
+                 clock: Clock = SYSTEM_CLOCK, script=None, start_thread: bool = True, scenes=None):
         self.cfg = cfg
         self.bus = bus
         self.sessions = sessions             # SessionManager（或测试替身：.get(sid) 返回会话）
@@ -36,11 +39,13 @@ class Host:
         self.engine = engine                 # InteractionEngine（决策日志）；可为 None
         self.clock = clock
         self.script = script
+        self.scenes = scenes
         self._cv = threading.Condition()
         self.current: dict | None = None
         self.history: list = []
         self._stop = threading.Event()
         self.sub = bus.subscribe("session.event", self._on_session_event, queue_size=5000, name="host") if bus else None
+        self.scene_sub = bus.subscribe("scene.changed", self._on_scene, name="host-scene") if bus else None
         self._thread = None
         if start_thread:
             self._thread = threading.Thread(target=self._loop, name="host", daemon=True)
@@ -59,9 +64,28 @@ class Host:
         sess = self.sessions.get(self.session_id)
         return sess if sess is not None and getattr(sess, "state", "running") == "running" else None
 
+    def video_blocking(self) -> bool:
+        return self.scenes is not None and self.scenes.blocks_script(self.session_id)
+
     def script_active(self) -> bool:
-        return (self.script is not None and not self.hc["pause_script"]
+        return (self.script is not None and not self.hc["pause_script"] and not self.video_blocking()
                 and bool(getattr(self.script, "active", lambda: False)()))
+
+    def _on_scene(self, _topic, ev: dict) -> None:
+        """带原声的视频开播：正在讲的讲品段让路（打断，视频结束后从这段续讲）。"""
+        if ev.get("session_id") != self.session_id or ev.get("reason") != "video_started":
+            return
+        if not (ev.get("scene") or {}).get("blocks_script"):
+            return
+        with self._cv:
+            cur = self.current
+        if cur is not None and cur["cue"].kind == "product":
+            sess = self._session()
+            if sess is not None:
+                sess.interrupt()
+            with self._cv:
+                if self.current is cur:
+                    self._finish_locked("interrupted", "播放带原声的视频，讲品让路")
 
     # ------------------------------------------------------------------ 会话事件
     def _on_session_event(self, _topic, ev: dict) -> None:
@@ -134,7 +158,7 @@ class Host:
         return {"enabled": bool(self.hc["enabled"]), "session_id": self.session_id, "session_ok": self._session() is not None,
                 "current": cur_d, "queue": self.queue.snapshot()[:10], "queue_size": len(self.queue),
                 "pause_interaction": bool(self.hc["pause_interaction"]), "pause_script": bool(self.hc["pause_script"]),
-                "script_active": self.script_active(),
+                "script_active": self.script_active(), "video_blocking": self.video_blocking(),
                 "script": self.script.status() if self.script is not None and hasattr(self.script, "status") else None,
                 "history": list(reversed(self.history[-10:]))}
 
@@ -143,8 +167,10 @@ class Host:
         self.queue.wake()
         with self._cv:
             self._cv.notify_all()
-        if self.sub is not None and self.bus is not None:
-            self.bus.unsubscribe(self.sub)
+        if self.bus is not None:
+            for sub in (self.sub, self.scene_sub):
+                if sub is not None:
+                    self.bus.unsubscribe(sub)
 
     # ------------------------------------------------------------------ 循环
     def _loop(self) -> None:
@@ -187,7 +213,29 @@ class Host:
             if seg is not None:
                 if self.engine is not None:
                     self.engine.add_log(seg)
-                self._start(sess, seg)
+                if seg.kind == "video":
+                    self._play_video(seg)
+                else:
+                    self._start(sess, seg)
+
+    def _play_video(self, cue: Cue) -> None:
+        """讲品流程里的视频节点：交给场景播放，不开口；这个节点随即算"完成"（视频本身挡不挡讲品由场景判断）。"""
+        sit = cue.situation or {}
+        status, note = "spoken", None
+        try:
+            if self.scenes is None:
+                raise RuntimeError("没有场景模块")
+            self.scenes.play_video(self.session_id, sit.get("media_id"), sit.get("mode"), sit.get("audio"), source="script")
+        except Exception as e:                       # noqa: BLE001  素材被删等：记日志，讲品继续
+            status, note = "failed", f"视频播放失败：{e}"
+            logger.warning(note)
+        if self.engine is not None:
+            self.engine.update(cue.id, status=status, text=f"播放视频「{sit.get('name') or sit.get('media_id')}」",
+                               text_source="video", note=note)
+        try:
+            self.script.on_done(cue)
+        except Exception:                            # noqa: BLE001
+            logger.exception("讲品回调失败")
 
     def _while_speaking(self, sess, cur: dict, wait: float) -> None:
         top = self.queue.peek_priority()

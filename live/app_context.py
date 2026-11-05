@@ -25,6 +25,8 @@ from live.interaction.queue import CueQueue
 from live.knowledge.service import KnowledgeBase
 from live.llm.service import LLMService
 from live.manager import SessionManager
+from live.media.scene import SceneManager
+from live.media.store import MediaStore
 from live.offline import OfflineManager
 from live.pool import WorkerPool
 from live.products.generator import ScriptGenerator
@@ -65,6 +67,8 @@ class AppContext:
         self.script: ProductScript | None = None
         self.kb: KnowledgeBase | None = None
         self.script_gen: ScriptGenerator | None = None
+        self.media: MediaStore | None = None
+        self.scenes: SceneManager | None = None
         self._subs: list = []
 
     # ------------------------------------------------------------------ 生命周期
@@ -85,7 +89,9 @@ class AppContext:
         self.recorder = Recorder(cfg, self.bus)
         # ---- 产品与知识库（P5）----
         self.products = ProductStore(os.path.join(cfg["server"]["data_dir"], "products.json"), bus=self.bus)
-        self.script = ProductScript(cfg, self.products, bus=self.bus)
+        self.media = MediaStore(cfg, bus=self.bus)
+        self.script = ProductScript(cfg, self.products, bus=self.bus, video_lookup=self.media.get)
+        self.scenes = SceneManager(cfg, self.bus, self.media, product_info=self.script.current_info, push=self._push_scene)
         self.kb = KnowledgeBase(cfg, self.bus, self.env, product_lookup=self.product_info,
                                 current_product=self.script.current_info)
         # ---- 互动引擎 + 主持人 ----
@@ -99,8 +105,10 @@ class AppContext:
         self.kb.trigger_lookup = self.engine.director.trigger
         self.script_gen = ScriptGenerator(cfg, self.llm, self.kb, self.compliance)
         self.sessions.sink_factories.append(lambda sid: SessionTap(self.bus, sid))
-        self.host = Host(cfg, self.bus, self.sessions, self.cue_queue, self.composer, self.engine, script=self.script)
+        self.host = Host(cfg, self.bus, self.sessions, self.cue_queue, self.composer, self.engine, script=self.script,
+                         scenes=self.scenes)
         self._subs.append(self.bus.subscribe("env.changed", self.kb.on_env_changed, name="kb-env"))
+        self._subs.append(self.bus.subscribe("products.changed", self.scenes.on_products_changed, name="scene-products"))
         self._subs += [
             self.settings.register(self.tts, ["tts"], name="tts"),
             self.settings.register(self.llm, ["llm"], name="llm"),
@@ -110,6 +118,7 @@ class AppContext:
             self.settings.register(_FeedSize(self.feed, cfg), ["danmaku.feed"], name="feed"),
             self.settings.register(self.engine, ["interaction", "host.pause_interaction"], name="interaction"),
             self.settings.register(self.kb, ["knowledge"], name="knowledge"),
+            self.settings.register(self.scenes, ["scene", "compliance.ai_disclosure"], name="scene"),
         ]
         self.danmaku.start()
         if self.start_workers:
@@ -131,6 +140,12 @@ class AppContext:
         """导演渲染话术时用的上下文：当前在讲的产品（话术里的 {product} 占位符）。"""
         return self.script.context() if self.script is not None else {}
 
+    def _push_scene(self, sid: str, event: dict) -> None:
+        """场景变化推给这路会话的画面 WebSocket（场景页 /scene 收到后切布局、播视频）。会话还没建好就不推。"""
+        hub = self.sessions.hub(sid) if self.sessions is not None else None
+        if hub is not None:
+            hub.on_event(event)
+
     def product_info(self, pid: str | None) -> dict | None:
         p = self.products.get(pid) if (self.products is not None and pid) else None
         return None if p is None else {"id": p.id, "name": p.name, "price_text": p.price_text}
@@ -144,6 +159,8 @@ class AppContext:
             self.danmaku.stop()             # 先停弹幕子进程，避免残留
         if self.kb is not None:
             self.kb.close()
+        if self.scenes is not None:
+            self.scenes.close()
         if self.recorder is not None:
             self.recorder.close()
         if self.feed is not None:

@@ -22,7 +22,7 @@ from collections import deque
 from live.core.bus import EventBus
 
 FEED_TOPICS = ("settings.changed", "env.changed", "danmaku.status", "live.event", "interaction.cue",
-               "host.action", "kb.ingest", "products.changed", "scene.changed", "tts.status")
+               "host.action", "kb.ingest", "products.changed", "media.changed", "scene.changed", "tts.status")
 
 
 class LiveEventThrottle:
