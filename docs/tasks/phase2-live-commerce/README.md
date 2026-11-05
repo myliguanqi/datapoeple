@@ -33,6 +33,7 @@
 | [06-config-and-secrets.md](06-config-and-secrets.md) | `.env` 键表、Web 可设置项（热更新/需重启）、默认值 |
 | [07-testing.md](07-testing.md) | 测试策略、mock、测试用例清单、上线前人工验收清单 |
 | [08-risks-compliance.md](08-risks-compliance.md) | 许可证（AGPL）、平台规则、隐私、广告法与 AI 标识、计费、安全 |
+| [09-next-session-prompt.md](09-next-session-prompt.md) | 新窗口接手 P5–P8 的提示词（含环境、已有接入点、注意事项） |
 
 ## 进度表（执行者每完成一个阶段更新这里）
 
