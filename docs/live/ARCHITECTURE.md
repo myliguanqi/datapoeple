@@ -142,8 +142,10 @@ AppContext（live/app_context.py）
   ├─ UsageMeter（live/core/usage.py）    每日计费用量，live_data/usage.json
   ├─ WorkerPool / SessionManager / OfflineManager（现有；SessionManager 给每个会话挂 SessionTap）
   ├─ DanmakuManager + Recorder（P2）
+  ├─ ProductStore / ProductScript / ScriptGenerator（P5，live/products/）  产品库、讲品轮播、讲解稿生成
+  ├─ KnowledgeBase（P5，live/knowledge/）  文档入库、检索、给写词的 retrieve(cue) 钩子
   ├─ ViewerMemory / CueQueue / InteractionEngine（P4，live/interaction/）
-  ├─ Compliance / Composer / Host（P4，live/host/）
+  ├─ Compliance / Composer / Host（P4，live/host/；Composer 注入 KnowledgeBase.retrieve，Host 注入 ProductScript）
   └─ EventFeed（live/feed.py）         总线 → /ws/console（Web 控制台推送）
 ```
 
@@ -164,6 +166,8 @@ AppContext（live/app_context.py）
 | `interaction.cue` | InteractionEngine（导演出了一条 cue） | EventFeed（决策日志） |
 | `host.action` | InteractionEngine.update（cue 状态变化：排队 → 写词 → 播报 → 已说 / 被打断 / 丢弃） | EventFeed（决策日志、控制台「现在」） |
 | `session.event` | SessionTap（会话的 speak_done / interrupted / playback …） | Host |
+| `kb.ingest` | KnowledgeBase（文档 queued → parsing → indexing → ready / failed / deleted / moved；索引重建） | EventFeed（产品页刷新资料表） |
+| `products.changed` | ProductStore（新建 / 修改 / 讲解稿 / 排序 / 删除 / 切换当前产品） | EventFeed（产品页、控制台「当前产品」） |
 
 ### 9.2 设置中心与热更新
 
@@ -328,3 +332,55 @@ LLM 慢了 / 挂了 / 没配置一律用触发器的兜底话术，不冷场。
 `LiveSession.begin_request(interruptible) → request_id`、`append(request_id, 一句话)`、`end_request(request_id)`：
 `speak_done` 在 end 之后、没有待合成的文本、所有段都播完时**只发一次**；`interrupt()` 返回被打断的 `request_ids`，被打断的请求不再发
 `speak_done`（已生成的帧照常播完）。普通 `speak()` 内部走同一套记账，行为不变（多句请求在最后一句播完才发 speak_done）。
+
+## 13. 产品知识库与讲品（第二阶段 P5）
+
+```
+上传 html/pdf/md（Web 拖拽多文件，可关联产品；不关联 = 公共资料）
+  → KnowledgeBase.ingest：校验扩展名与大小（knowledge.max_doc_mb）→ 存 live_data/kb/files/<随机ID>.<ext>（防路径穿越）
+  → 后台单线程：loaders 解析 → chunker 切块 → 检索后端建索引（kb.ingest 进度事件）
+弹幕「这个多少钱」→ 导演 product_question cue → Host → Composer.compose
+  → KnowledgeBase.retrieve(cue)：当前产品（ProductScript）+ 公共资料范围内检索 top_k → 资料够不够？
+       够   → 资料片段进 LLM 用户消息「资料」字段，系统提示追加 persona.rag_prompt；没 LLM / 超时 → 念资料原句（extract）
+       不够 → knowledge.no_answer_text（帮您确认 / 看商品详情 / 问客服），不调 LLM
+  → 合规过滤 → 逐句播报；决策日志 text_source = knowledge，refs = 依据的片段
+没有互动时 Host 问 ProductScript.next_segment() → 讲解稿下一段（kind=product，可被打断）
+```
+
+### 13.1 解析与切块（`live/knowledge/loaders/`、`chunker.py`）
+
+| 格式 | 解析 | 标题 / 页码 |
+|---|---|---|
+| md / markdown / txt | 逐行：`#` 标题、setext 标题、列表、引用、代码块；表格行转「列1：列2」（两列表的表头丢掉） | `heading_path` = [文档标题(H1), 各级小标题] |
+| html / htm | BeautifulSoup（内置 html.parser）去掉 script/style/nav/header/footer/aside/form… ；块级元素各成一行，表格行转「列1：列2」 | h1 = 文档标题，h2–h6 → 小标题 |
+| pdf | pypdf 逐页 `extract_text`；「一、发货时间」「3.2 保修」这类不带句末标点的短行识别为小标题（跨页延续） | `page` = 页码；没有文字层（扫描版）直接报错，不做 OCR |
+
+文本编码 UTF-8 / GB18030 自动识别。切块：块不跨章节；段落 → 句子 → 硬切，每块 ≤ `knowledge.chunk_chars`（400），
+相邻块重叠 `knowledge.chunk_overlap`（50）字。切块参数改了只对新入库生效，旧文档在 Web 上标「需重建」。
+
+### 13.2 检索（`live/knowledge/index/`、`text.py`）
+
+- 后端（`knowledge.backend`，热切换后从切块重建索引）：`fts` = SQLite FTS5（jieba 搜索引擎模式预分词、空格分隔进 unicode61 分词器，
+  检索词 OR，按 bm25 排序）；`bm25` = rank_bm25 纯 Python（内存索引，数据变了下次检索时重建）；`hybrid` = 关键词 + 向量
+  （OpenAI 兼容 `/embeddings`，`.env` 的 `EMBEDDING_*`，**计费**；向量存 kb.sqlite，余弦；RRF 融合；重建只补缺失的向量）。
+- 查询构造：jieba 分词 → 去疑问词/语气词（"这个、多少、吗…"）→ 产品名里的词不算信息点（"这个保温杯多少钱"的"保温杯"），
+  但问题只剩这些词时保留（"保温能保多久"）→ 同义词扩展 `knowledge.synonyms`（"多少钱" → 价格 / 价）。
+- **资料够不够**：问题的每个信息点是一组写法，命中片段覆盖的比例 ≥ `knowledge.min_coverage`（0.5）且最高分 ≥ `knowledge.min_score`
+  才算够；数字能匹配区间（"我 165" ↔ "160-168cm"）。只问"介绍一下"（没有信息点）时用产品名检索，交给 LLM / 触发器话术。
+- 范围：当前产品的资料 + 公共资料（`product_id=""`）；同样内容传了两次只留一条。
+- 摘句（extract）：在最相关片段里挑覆盖信息点最多的句子，同一片段里能补上新信息点的句子按原文顺序补上，去掉 Markdown/表格符号，
+  加上提问者称呼，限 `host.answer_max_chars`。
+
+### 13.3 产品与讲品（`live/products/`）
+
+- `ProductStore`：`live_data/products.json`（原子写），产品 = 名称、价格/机制、卖点、讲解稿段落（`confirmed` 待确认/已确认、
+  `source` manual/llm/template、生成时的合规命中）、上架、顺序、单独时长、当前讲解中的产品 `active_id`。
+- `ScriptGenerator`：按卖点检索该产品资料 → LLM（`persona.script_prompt`，JSON `{"segments": [...]}`）→ 每段合规过滤 → 待确认；
+  LLM 不可用 / 失败 / 格式不对时用模板拼草稿（开场 + 资料各章节首句 + 下单引导），同样待确认。
+- `ProductScript`（主持人的 script 接口）：只播已确认段（`products.require_confirmed_script`）；段间停顿 `products.segment_gap_s`；
+  打断 → 不前进、回应完从这一段重讲；讲满 `duration_s`（产品单独设置或 `products.duration_s`）在段落边界换下一个启用且有确认稿的产品；
+  Web 显式切到的产品即使还没有确认稿也不偷偷换（状态里写原因）；`{product}` `{price}` `{anchor}` 占位符播报时替换。
+  当前产品同时决定话术里的 `{product}`（`AppContext.host_context`）和知识库的检索范围。
+- 讲品段 cue：`event=product_rotation`、`kind=product`、优先级 `products.priority`（3）、`interruptible`；
+  ≥ `host.interrupt_priority`（50）的互动（礼物、产品提问 52、购买意向 55）打断讲品，低于它的排队等这段讲完。
+

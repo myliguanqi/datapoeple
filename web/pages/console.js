@@ -1,4 +1,4 @@
-// 直播控制台：画面预览 + 正在说 + 人工插话 + 会话事件。后续阶段在这里加队列、当前产品、实时数据、弹幕流。
+// 直播控制台：画面预览 + 正在说 / 下一句 / 队列 + 人工插话 + 当前产品（切换、跳段）+ 实时数据 + 弹幕流 + 会话事件。
 import { busy, card, cardHead, fmtTime, h, logList } from '../ui.js';
 import { describe, typeBadge, userTags } from '../live_events.js';
 import { statusBadge } from './interaction_tabs.js';
@@ -27,6 +27,11 @@ export async function mount(el, app) {
   const speakBtn = h('button', { class: 'primary', type: 'button' }, '说');
   const interruptBtn = h('button', { type: 'button' }, '打断');
   const statsBox = h('div', { class: 'row num' });
+  const productSel = h('select', { title: '当前讲解的产品' });
+  const prevBtn = h('button', { type: 'button', class: 'small' }, '上一个');
+  const nextBtn = h('button', { type: 'button', class: 'small' }, '下一个');
+  const skipBtn = h('button', { type: 'button', class: 'small' }, '下一段');
+  const scriptLine = h('div', { class: 'hint' });
   const feedBody = h('tbody');
 
   el.append(
@@ -45,6 +50,8 @@ export async function mount(el, app) {
         card('人工插话', speakText,
           h('div', { class: 'row' }, voiceSel, h('label', { class: 'inline' }, interruptFirst, '先打断'),
             h('span', { class: 'grow' }), speakBtn)),
+        card(cardHead('当前产品', h('a', { href: '#/products' }, '产品与知识库 →')),
+          h('div', { class: 'row' }, productSel, prevBtn, nextBtn, skipBtn), scriptLine),
         card(cardHead('实时数据', h('a', { href: '#/danmaku' }, '弹幕互动 →')), statsBox),
         card('会话事件', log.el))),
     card(cardHead('弹幕流（最近 50 条，完整版在「弹幕互动」页）'),
@@ -154,8 +161,49 @@ export async function mount(el, app) {
       playingMeta.textContent = st.enabled ? (st.session_ok ? '主持人待命' : `主持人等待会话「${st.session_id}」`) : '主持人已关闭（直播间设置 → 主播人设）';
     }
     const q = st.queue || [];
-    nextLine.replaceChildren(h('span', {}, `队列 ${st.queue_size} 条`), q[0] ? h('span', {}, ' · 下一句：', h('code', {}, q[0].event), ` ${q[0].text || ''}`) : '');
+    const sc = st.script;
+    const scriptNext = !q[0] && sc && st.script_active && !(cur && cur.kind === 'product')
+      ? h('span', {}, ` · 下一句：讲品「${sc.product_name}」第 ${sc.segment}/${sc.segments} 段`) : '';
+    nextLine.replaceChildren(h('span', {}, `队列 ${st.queue_size} 条`), q[0] ? h('span', {}, ' · 下一句：', h('code', {}, q[0].event), ` ${q[0].text || ''}`) : scriptNext);
+    renderScript(st);
   }
+  function renderScript(st) {
+    const sc = st.script;
+    if (!sc) {
+      scriptLine.textContent = '';
+      return;
+    }
+    const opts = [...productSel.options].map((o) => o.value).join();
+    const want = (sc.rotation || []).map((p) => p.id);
+    if (sc.product_id && !want.includes(sc.product_id)) want.unshift(sc.product_id);
+    if (opts !== want.join() || productSel.options.length === 0) loadProducts();
+    if (document.activeElement !== productSel && sc.product_id) productSel.value = sc.product_id;
+    skipBtn.disabled = !st.script_active;
+    if (sc.inactive_reason) scriptLine.textContent = sc.inactive_reason;
+    else {
+      scriptLine.textContent = `${st.pause_script ? '讲品已暂停 · ' : ''}${sc.speaking ? '正在讲' : '下一段'}第 ${sc.segment}/${sc.segments} 段 · 已讲 ${Math.round(sc.elapsed_s)}s / ${Math.round(sc.duration_s)}s 后换下一个产品`
+        + (sc.next_text ? ` · ${sc.next_text}…` : '');
+    }
+  }
+  let productsLoading = null;
+  function loadProducts() {
+    if (productsLoading) return productsLoading;
+    productsLoading = app.api.get('/api/products').then((r) => {
+      productSel.replaceChildren(...r.items.map((p) => new Option(`${p.name}${p.enabled ? '' : '（已停用）'}${p.playable ? '' : '（无确认稿）'}`, p.id)));
+      if (!r.items.length) productSel.append(new Option('还没有产品', ''));
+      if (r.active_id) productSel.value = r.active_id;
+    }).catch(() => {}).finally(() => setTimeout(() => (productsLoading = null), 3000));
+    return productsLoading;
+  }
+  productSel.onchange = () => productSel.value && busy(productSel, () => app.api.post(`/api/host/product/${productSel.value}/activate`).then(refreshHost));
+  prevBtn.onclick = () => busy(prevBtn, () => app.api.post('/api/host/product/prev').then(refreshHost));
+  nextBtn.onclick = () => busy(nextBtn, () => app.api.post('/api/host/product/next').then(refreshHost));
+  skipBtn.onclick = () => busy(skipBtn, () => app.api.post('/api/host/script/next').then(refreshHost));
+  on(app.events, 'topic:products.changed', () => {
+    productsLoading = null;
+    loadProducts();
+  });
+  loadProducts();
   async function refreshHost() {
     try {
       renderHost(await app.api.get('/api/host/status'));

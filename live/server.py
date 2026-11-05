@@ -21,7 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from live import __version__
-from live.api import console_ws, danmaku, host as host_api, interaction, offline, sessions, settings as settings_api, system
+from live.api import (console_ws, danmaku, host as host_api, interaction, knowledge, offline, products, sessions,
+                      settings as settings_api, system)
 from live.api.deps import WRITE_METHODS, check_write
 from live.app_context import AppContext
 from live.config import PROJECT_ROOT
@@ -65,7 +66,7 @@ def create_app(cfg: dict | None = None, *, settings: SettingsCenter | None = Non
             response.headers["Cache-Control"] = "no-cache"     # 网页升级后浏览器不会沿用旧的 JS/CSS（有 ETag，没变化回 304）
         return response
 
-    for mod in (system, sessions, offline, settings_api, danmaku, interaction, host_api, console_ws):
+    for mod in (system, sessions, offline, settings_api, danmaku, interaction, host_api, knowledge, products, console_ws):
         app.include_router(mod.router)
     app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
     return app

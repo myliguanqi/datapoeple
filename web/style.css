@@ -242,3 +242,27 @@ body.view-only .stage { border-radius: 0; width: 100vw; height: 100vh; aspect-ra
   box-shadow: var(--shadow);
 }
 .savebar[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- 产品与知识库 */
+.products-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: var(--s3); align-items: start; }
+@media (max-width: 900px) { .products-layout { grid-template-columns: minmax(0, 1fr); } }
+.plist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pitem { display: flex; align-items: center; gap: var(--s2); padding: 8px; border: 1px solid var(--line); border-radius: var(--r1); cursor: pointer; min-width: 0; background: var(--surface); }
+.pitem:hover { border-color: var(--accent); }
+.pitem.active { background: var(--accent-soft); border-color: var(--accent); }
+.pitem.dragging { opacity: .5; }
+.pitem.global { border-style: dashed; }
+.pitem .grip { color: var(--muted); cursor: grab; user-select: none; flex: none; }
+.pitem .grow { min-width: 0; }
+.pitem .pname { font-weight: 600; overflow-wrap: anywhere; }
+.pempty { padding: 8px; }
+.row.tight { gap: 4px; margin-top: 2px; }
+.dropzone { border: 2px dashed var(--line); border-radius: var(--r2); padding: var(--s4); text-align: center; color: var(--muted); margin-bottom: var(--s3); }
+.dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone input[type=file] { margin: 6px auto; display: block; }
+.seg-row { border: 1px solid var(--line); border-radius: var(--r1); padding: 8px; min-width: 0; }
+.seg-row.pending { border-left: 3px solid var(--warn); }
+.seg-row textarea { margin-top: 6px; }
+.chunk { border-top: 1px solid var(--line); padding: 8px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chunk:first-of-type { border-top: 0; }
+.answer { font-size: 15px; padding: 8px 12px; background: var(--surface-2); border-radius: var(--r1); overflow-wrap: anywhere; }

@@ -83,10 +83,11 @@ async def main():
     wait_session()
     st = requests.get(f"{BASE}/api/system").json()
     llm_ok = bool((st["services"].get("llm") or {}).get("available"))
+    keys = ("interaction.memory.record_test_events", "host.pause_interaction", "host.pause_script")
+    fields = {f["key"]: f for f in requests.get(f"{BASE}/api/settings").json()["fields"]}
+    old = {k: (fields[k]["value"], fields[k]["source"] == "runtime") for k in keys}   # 原来没被 Web 覆盖的键，结束时 reset
     requests.post(f"{BASE}/api/interaction/resume")
     requests.post(f"{BASE}/api/host/script/resume")
-    old_rec = next(f["value"] for f in requests.get(f"{BASE}/api/settings").json()["fields"]
-                   if f["key"] == "interaction.memory.record_test_events")
     requests.put(f"{BASE}/api/settings", json={"changes": {"interaction.memory.record_test_events": True}})
     host = requests.get(f"{BASE}/api/host/status").json()
     check("主持人绑定 default 会话", host["enabled"] and host["session_ok"],
@@ -169,7 +170,8 @@ async def main():
         for it in requests.get(f"{BASE}/api/viewers", params={"q": name}).json()["items"]:
             if it["user_id"].startswith("sim_"):
                 requests.delete(f"{BASE}/api/viewers/{it['user_id']}")
-    requests.put(f"{BASE}/api/settings", json={"changes": {"interaction.memory.record_test_events": old_rec}})
+    requests.put(f"{BASE}/api/settings", json={"changes": {k: v for k, (v, rt) in old.items() if rt}})
+    requests.post(f"{BASE}/api/settings/reset", json={"keys": [k for k, (_, rt) in old.items() if not rt]})
     n_fail = sum(1 for _, ok in results if not ok)
     print(f"\n{len(results) - n_fail}/{len(results)} 通过")
 

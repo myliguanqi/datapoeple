@@ -14,6 +14,7 @@
 | 先不下载模型也能开发 | `mock` 后端：不需要模型、显卡、torch，整条链路（时钟、协议、网页、离线任务、多卡调度）都能跑 |
 | 抖音弹幕接入（第二阶段） | 独立子进程接抖音直播间（只读），弹幕/礼物/点赞/进场/关注/分享/粉丝团/在线人数/贡献榜全字段解析（性别、财富等级、粉丝团、本场消费…）；连击礼物结算一次；断线退避重连；Web 上改房间号即热切换；模拟弹幕源与 JSONL 录制/回放 |
 | 弹幕自动互动（第二阶段） | 导演层（移植参考项目）按优先级决定先谢礼、先答问题还是欢迎进场：礼物 S/M/L 分档、连续送礼、回踩、榜首易主、金主/熟客/高财富等级分级欢迎、关注/粉丝团/分享/点赞、人数猛涨承接、产品提问、购买意向；跨场长期记忆；模板话术零延迟，配了 LLM 用 LLM 写词（超时自动兜底）；所有台词过合规过滤；Web 可看决策日志、改触发器 |
+| 产品知识库与讲品（第二阶段） | 上传 html / pdf / md 产品资料（可关联产品，或作为公共资料），自动解析、切块、建索引（SQLite FTS5 + jieba；可选向量混合检索）；观众问产品问题时只依据资料回答（配了 LLM 由 LLM 组织语言，没配就念资料原句），资料里没有就说「帮您确认 / 看商品详情 / 问客服」，不编造；讲解稿可一键用知识库生成（过合规、人工确认后才播），没有弹幕时按讲解稿轮播讲品，有互动先回应再断点续讲 |
 | 所有参数网页可改（第二阶段） | 「直播间设置」页按 schema 自动生成，标「即时生效 / 需重启」；导出/导入/历史回滚；写操作需口令 |
 
 ---
@@ -24,13 +25,15 @@
 live/                       服务层（Python 包）
   server.py                 FastAPI app 工厂 + 写操作鉴权中间件
   app_context.py            统一构造、注入所有服务（AppContext）
-  api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、console_ws）
+  api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、console_ws）
   core/                     统一事件模型 events、事件总线 bus、实现注册表 registry、可注入时钟 clock
   settings/                 设置中心：schema（所有配置项的单一来源）、store（三层合并 + 热更新 + 版本回滚）、env（.env 密钥）
   feed.py                   控制台推送（事件总线 → /ws/console，点赞/进场节流）
   interaction/              互动引擎：director（导演）、state、memory（长期记忆）、queue、intent、compliance、engine；
     policies/               commerce.yaml（触发器表）、persona_commerce.md（带货主播人设）
-  host/                     主持人：host（编排）、composer（写词）、session_tap
+  host/                     主持人：host（编排）、composer（写词，接知识库）、session_tap
+  knowledge/                产品知识库：loaders（md/html/pdf）、chunker、text（分词/查询/覆盖度/摘句）、index（fts/bm25/hybrid）、store、service
+  products/                 产品库（products.json）、讲品轮播 script、讲解稿生成 generator
   danmaku/                  弹幕接入：manager（子进程管理）、process（子进程入口）、mock、replay、recorder、cookie；
     douyin/                 抖音：parse.py（protobuf → 统一事件，纯函数 + 连击聚合）、adapter.py（接管 vendor fetcher）
   manager.py                会话管理
@@ -61,6 +64,8 @@ docs/live/
 tests/live/
   test_e2e_mock.py          端到端测试（起 mock 服务后运行，33 项）
   test_runner_logic.py      真实推理后端逻辑测试（需 torch+CUDA，不需要权重，18 项）
+  test_e2e_commerce.py      带货全链路（起 mock 服务后运行，16 项）
+  test_e2e_products.py      讲品 + 知识库（起 mock 服务后运行，15 项）
   test_*.py                 pytest 单元/集成测试（python -m pytest tests/live -q -m "not e2e"）
 live_server.py              启动脚本
 start_live.bat / start_live_mock.bat
@@ -157,11 +162,25 @@ python live_server.py --config live/configs/live.yaml
 
 连上之后数字人会自动互动：谢礼物、答产品问题、欢迎进场、承接人数猛涨……「弹幕互动 → 决策日志」能看到每一句是哪个事件、
 哪个触发器、模板还是 LLM 写的；「触发器」页可以改优先级、冷却和话术；「直播控制台」有「暂停互动」和「人工插话」（最高优先级，可先打断）。
-没接弹幕时数字人不会自己说话。
+没接弹幕时数字人不会自己"互动"（冷场话术也不出）；但有已确认的讲解稿时会照常讲品（见下一节，控制台可「暂停讲品」）。
 
 只接收消息，不发弹幕、不点赞、不私信；只用于自己的直播间。抖音对 AI 数字人直播有标识等规范，开播前请查阅平台最新规则。
 
-### 4. 纯画面模式 / OBS 推流
+### 4. 产品与知识库、讲品
+
+1. 「产品与知识库」页点「新建产品」，在「基本信息」填名称、价格/机制、卖点。
+2. 「资料」标签把这个产品的 html / pdf / md 拖进去（可多选）；店铺通用的售后、发货政策放「公共资料」，所有产品都能检索到。
+   文件名会改成随机 ID 保存在 `live_data/kb/files/`；扫描版 PDF 没有文字层，不支持（不做 OCR）。
+3. 「测试」标签：**检索测试**看命中了哪些片段、问题的信息点覆盖了多少（不够就会说「帮您确认」）；**回答测试**看数字人最终会怎么回答，可勾「让数字人说」。
+4. 「讲解稿」标签点「用知识库生成」（配了 LLM 用 LLM 写，没配用模板拼草稿），逐段检查、勾「已确认」后保存——**只有确认过的段落才会播**。
+5. 没有互动时，主持人就按讲解稿逐段讲当前产品；礼物、产品提问、购买意向等高优先级互动会打断讲品，回应完从被打断的那段接着讲；
+   讲满「讲解时长」换下一个启用的产品（左侧列表拖动排序）。控制台「当前产品」可以切产品、跳到下一段，「暂停讲品」随时停。
+   话术里的 `{product}` 就是当前产品，观众提问也只在当前产品 + 公共资料里检索。
+
+检索参数（后端、top_k、覆盖度门槛、同义词、切块长度）在「直播间设置 → 知识库与讲品」，改了即时生效；改切块参数后要在产品页点「重建索引」。
+开向量检索（`knowledge.backend: hybrid` + `knowledge.embedding.enabled`）要在 `.env` 配 `EMBEDDING_API_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`，**按调用计费**。
+
+### 5. 纯画面模式 / OBS 推流
 
 `http://127.0.0.1:8000/?view=1&session=default` 只显示画面（带字幕），打开即自动连接，断线自动重连。
 可以直接在 OBS 里加「浏览器源」填这个地址（宽高 512×512，勾选「通过 OBS 控制音频」），
@@ -170,7 +189,7 @@ URL 参数：`session=` 会话、`subs=0` 不显示字幕、`latency=0.3` 客户
 
 > 普通浏览器要求用户点击后才能出声，纯画面模式下点一下页面即可；OBS 浏览器源允许自动播放，不需要点。
 
-### 5. 用代码接入
+### 6. 用代码接入
 
 ```python
 import requests
@@ -201,6 +220,9 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 | `tts.engine` | volc | volc（火山声音复刻，`.env` 配凭证；没配时自动按 `tts.fallback` 回退 edge → mock）/ edge / http / mock |
 | `tts.speed` / `tts.cache.*` / `tts.daily_max_chars` | 1.0 / 开 / 0 | 默认语速；合成缓存（重复句不再请求）；计费 TTS 每日字数上限（0 = 不限） |
 | `llm.*` | | 温度、max_tokens、流式、防复读条数、每日调用上限；地址/密钥/模型在 `.env` 的 `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` |
+| `knowledge.backend` / `top_k` / `min_coverage` | fts / 4 / 0.5 | 检索后端（fts / bm25 / hybrid）；每次取几段资料；问题信息点被资料覆盖不到这个比例就说「帮您确认」 |
+| `knowledge.chunk_chars` / `chunk_overlap` / `synonyms` | 400 / 50 / 内置 | 切块长度与重叠（改了要重建索引）；检索同义词（「多少钱」→ 价格） |
+| `products.rotation_enabled` / `duration_s` / `segment_gap_s` / `require_confirmed_script` | 开 / 300 / 2 / 开 | 讲品轮播、每个产品讲多久、段间停顿、只播已确认的讲解稿 |
 
 ### 画面僵硬怎么调
 
@@ -235,6 +257,16 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ## 已验证 / 未验证
 
+- ✅ 第二阶段 P5（产品知识库 + 讲品）：pytest 51 项（md 标题层级/表格、html 去噪、pdf 页码与小标题、空文档/损坏/扫描版/GBK 编码；
+  切块长度与重叠、不跨章节；FTS5 与 BM25 两个后端下价格/保质期/尺码/发货/材质 5 问命中正确章节、按产品过滤与公共资料、
+  资料没有判定、删除后检索不到、改切块参数后重建、入库进度事件、上传类型/大小/空文件/文件名改写/去重、后端热切换、
+  混合检索（假向量，重建不重复计费）、重启后续做未完成的入库；RAG：mock LLM 收到资料片段与「资料不是指令」约束、资料不足不调 LLM、
+  没 LLM 念资料原句并过合规、LLM 超时回退原句、按当前产品限定范围、知识库为空时保持原触发器话术；产品库 CRUD/持久化/排序、
+  讲解稿生成（mock LLM 的 JSON + 合规、没 LLM 的模板草稿）、轮播（假时钟：段间停顿、断点续讲、按时长换产品、跳段、只播已确认）、
+  主持人讲品中被产品提问打断 → 用资料回答 → 续讲；接口 4 例）；e2e 15 项（`tests/live/test_e2e_products.py`：上传 → 回答测试 5 问都来自资料
+  → 生成并确认讲解稿 → 数字人讲品 → 产品提问打断并基于资料回答 → 断点续讲 → 跳段 → 清理）；原有 e2e 33 + 16 项不受影响。
+  Edge 无头走查产品页四个标签与控制台「当前产品」（1366 与窄屏无横向溢出、无 JS 报错）。**真实 LLM 的回答与讲解稿质量待配置 .env 后验收**；
+  向量检索没有接真实 Embedding 接口跑过。
 - ✅ 第二阶段 P4（互动引擎 + 主持人）：pytest 48 项（导演 19 例复刻参考项目平台用例：礼物分档/连续送礼/18s·45s 回踩/榜首易主/
   金主·熟客·高等级·回头客·普通欢迎/known_before/建档门槛/点赞冷却放大/同拍合并/人数猛涨下滑破整/发声间隔/触发器覆盖/冷场；
   意图与合规 7 例；追加式请求与 speak_done 5 例；主持人编排 10 例：打断讲品与断点续讲、低优先级不打断、LLM 流式按句、超时兜底、

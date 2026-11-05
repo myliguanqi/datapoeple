@@ -335,6 +335,47 @@ FIELDS += [
 ]
 
 
+# ============================================================================ 知识库与讲品（第二阶段 P5）
+_KB = dict(group="knowledge")
+FIELDS += [
+    F("knowledge.backend", "enum", "fts", "检索后端", "fts = SQLite FTS5 + jieba 分词（默认）/ bm25 = 纯 Python（sqlite 不支持 FTS5 时用）/ "
+      "hybrid = 关键词 + 向量混合（需打开向量检索并在 .env 配 EMBEDDING_*，按调用计费）；切换后自动重建索引", choices=("fts", "bm25", "hybrid"),
+      **_KB),
+    F("knowledge.top_k", "int", 4, "检索条数", "回答问题时取最相关的几段资料给 LLM", min=1, max=20, **_KB),
+    F("knowledge.min_score", "float", 0.0, "最低相关分数", "最相关那段的分数低于此值视为「资料没有」（0 = 不按分数判断，只看覆盖度）", min=0, max=1000,
+      **_KB),
+    F("knowledge.min_coverage", "float", 0.5, "问题覆盖度门槛", "问题里的信息点（去掉疑问词、产品名后的关键词）被资料覆盖的比例低于此值，"
+      "视为「资料没有」，改说「帮您确认 / 看商品详情 / 问客服」，不让 LLM 编", min=0, max=1, **_KB),
+    F("knowledge.context_chars", "int", 1500, "给 LLM 的资料字数上限", min=200, max=8000, **_KB),
+    F("knowledge.chunk_chars", "int", 400, "切块长度（字）", "对新上传的文档生效；已入库的文档点「重建索引」才按新参数重新切块", min=100, max=2000, **_KB),
+    F("knowledge.chunk_overlap", "int", 50, "切块重叠（字）", "相邻两块重复的字数，避免一句话被切断后检索不到；改了要「重建索引」", min=0, max=500, **_KB),
+    F("knowledge.max_doc_mb", "int", 50, "单个文档大小上限（MB）", min=1, max=500, **_KB),
+    F("knowledge.synonyms", "dict",
+      {"多少钱": ["价格", "价"], "价钱": ["价格", "价"], "几块": ["价格", "价"], "贵不贵": ["价格", "价"],
+       "优惠券": ["优惠", "券", "立减", "满减"], "便宜": ["优惠", "立减", "到手价"], "什么码": ["尺码", "码"], "码数": ["尺码", "码"],
+       "多大": ["尺寸", "容量", "尺码"], "多重": ["重量"], "退换": ["退货", "换货", "无理由"], "退货": ["退货", "无理由"],
+       "售后": ["退货", "换货", "质保", "客服"], "保修": ["质保", "保修"], "发货": ["发货", "快递"], "快递": ["快递", "发货"],
+       "包邮": ["包邮", "运费"], "运费": ["运费", "包邮"], "保温": ["保温", "水温"], "材质": ["材质", "面料", "材料"],
+       "什么做的": ["材质", "面料", "材料"], "颜色": ["颜色", "色"], "怎么洗": ["洗涤", "清洗", "洗"], "能用多久": ["质保", "寿命"],
+       "正品": ["正品", "授权"], "怎么买": ["小黄车", "下单", "链接"]},
+      "检索同义词", "问题里出现左边的词时，也用右边的词去资料里找（如「多少钱」→ 价格）；右边的词也计入覆盖度", **_KB),
+    F("knowledge.no_answer_text", "str", "{asker}，这个问题主播帮您确认一下，您也可以点开小黄车看商品详情，或者问问客服哦！", "资料没有时的话术",
+      "{asker} 是提问观众的称呼", **_KB),
+    F("knowledge.embedding.enabled", "bool", False, "向量检索", "检索后端选 hybrid 时才用；上传/重建索引时会调用 .env 配置的 Embedding 接口（计费）", **_KB),
+    F("knowledge.embedding.timeout_s", "float", 20.0, "Embedding 超时（秒）", min=2, max=120, **_KB),
+    F("products.rotation_enabled", "bool", True, "讲品轮播", "没有互动时按讲解稿逐段讲当前产品（有高优先级互动先互动，再断点续讲）", **_KB),
+    F("products.duration_s", "float", 300.0, "每个产品讲多久（秒）", "到时间讲完当前段就换下一个启用的产品（产品可单独设置）", min=30, max=7200, **_KB),
+    F("products.segment_gap_s", "float", 2.0, "段间停顿（秒）", min=0, max=120, **_KB),
+    F("products.require_confirmed_script", "bool", True, "只播已确认的讲解稿", "LLM / 模板生成的段落标「待确认」，人工确认后才参与轮播（广告法要求人工把关）",
+      **_KB),
+    F("products.priority", "int", 3, "讲品段优先级", "讲品段在主持人里的优先级（很低：有互动先互动）", min=0, max=100, **_KB),
+    F("products.generate_segments", "int", 5, "生成讲解稿段数", min=2, max=12, **_KB),
+    F("persona.rag_prompt", "text", _read_policy("rag_prompt.md"), "知识库回答规则", "回答产品问题时附加在人设提示词后面（带「资料」时）", **_PS),
+    F("persona.script_prompt", "text", _read_policy("script_prompt.md"), "讲解稿生成提示词", "「用知识库生成讲解稿」时的系统提示；{anchor} {shop_line} 会被替换",
+      **_PS),
+]
+
+
 # ============================================================================ 工具
 def _index(fields_: list[Field]) -> dict[str, Field]:
     out = {}

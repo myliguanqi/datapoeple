@@ -1,7 +1,7 @@
 """AppContext：统一构造所有服务并互相注入。FastAPI 路由从 request.app.state.ctx 取服务，测试可替换任意服务。
 
-构造顺序：设置中心（含事件总线）+ .env → start(loop) 时创建 TTS、worker 池、会话、离线任务、控制台推送，
-并把可热更新的模块注册到设置中心。后续阶段（弹幕、互动、主持人、知识库……）也在这里加。
+构造顺序：设置中心（含事件总线）+ .env → start(loop) 时创建 TTS/LLM、worker 池、会话、离线任务、控制台推送、弹幕、
+产品库与讲品轮播、知识库、互动引擎、写词与主持人，并把可热更新的模块注册到设置中心。
 """
 from __future__ import annotations
 
@@ -22,10 +22,14 @@ from live.interaction.compliance import Compliance
 from live.interaction.engine import InteractionEngine
 from live.interaction.memory import ViewerMemory
 from live.interaction.queue import CueQueue
+from live.knowledge.service import KnowledgeBase
 from live.llm.service import LLMService
 from live.manager import SessionManager
 from live.offline import OfflineManager
 from live.pool import WorkerPool
+from live.products.generator import ScriptGenerator
+from live.products.script import ProductScript
+from live.products.store import ProductStore
 from live.settings.env import Env
 from live.settings.store import SettingsCenter
 from live.core.usage import UsageMeter
@@ -57,6 +61,10 @@ class AppContext:
         self.compliance: Compliance | None = None
         self.composer: Composer | None = None
         self.host: Host | None = None
+        self.products: ProductStore | None = None
+        self.script: ProductScript | None = None
+        self.kb: KnowledgeBase | None = None
+        self.script_gen: ScriptGenerator | None = None
         self._subs: list = []
 
     # ------------------------------------------------------------------ 生命周期
@@ -75,15 +83,24 @@ class AppContext:
         self.feed = EventFeed(self.bus, loop, max_items=cfg["danmaku"]["feed"]["max_items"])
         self.danmaku = DanmakuManager(cfg, self.bus, self.env)
         self.recorder = Recorder(cfg, self.bus)
+        # ---- 产品与知识库（P5）----
+        self.products = ProductStore(os.path.join(cfg["server"]["data_dir"], "products.json"), bus=self.bus)
+        self.script = ProductScript(cfg, self.products, bus=self.bus)
+        self.kb = KnowledgeBase(cfg, self.bus, self.env, product_lookup=self.product_info,
+                                current_product=self.script.current_info)
         # ---- 互动引擎 + 主持人 ----
         self.memory = ViewerMemory(cfg)
         self.cue_queue = CueQueue(cfg)
         self.engine = InteractionEngine(cfg, self.bus, self.cue_queue, self.memory, self.llm, context=self.host_context,
                                         is_live=lambda: self.danmaku.status().get("state") == "connected")
         self.compliance = Compliance(cfg)
-        self.composer = Composer(cfg, self.llm, self.compliance)
+        self.composer = Composer(cfg, self.llm, self.compliance, retrieve=self.kb.retrieve)
+        self.kb.composer = self.composer
+        self.kb.trigger_lookup = self.engine.director.trigger
+        self.script_gen = ScriptGenerator(cfg, self.llm, self.kb, self.compliance)
         self.sessions.sink_factories.append(lambda sid: SessionTap(self.bus, sid))
-        self.host = Host(cfg, self.bus, self.sessions, self.cue_queue, self.composer, self.engine)
+        self.host = Host(cfg, self.bus, self.sessions, self.cue_queue, self.composer, self.engine, script=self.script)
+        self._subs.append(self.bus.subscribe("env.changed", self.kb.on_env_changed, name="kb-env"))
         self._subs += [
             self.settings.register(self.tts, ["tts"], name="tts"),
             self.settings.register(self.llm, ["llm"], name="llm"),
@@ -92,6 +109,7 @@ class AppContext:
             self.settings.register(self.recorder, ["danmaku.record"], name="recorder"),
             self.settings.register(_FeedSize(self.feed, cfg), ["danmaku.feed"], name="feed"),
             self.settings.register(self.engine, ["interaction", "host.pause_interaction"], name="interaction"),
+            self.settings.register(self.kb, ["knowledge"], name="knowledge"),
         ]
         self.danmaku.start()
         if self.start_workers:
@@ -110,8 +128,12 @@ class AppContext:
                 logger.error(f"创建 default 会话失败: {e}")
 
     def host_context(self) -> dict:
-        """导演渲染话术时用的上下文（当前在讲的产品等；P5 由讲品模块提供）。"""
-        return {}
+        """导演渲染话术时用的上下文：当前在讲的产品（话术里的 {product} 占位符）。"""
+        return self.script.context() if self.script is not None else {}
+
+    def product_info(self, pid: str | None) -> dict | None:
+        p = self.products.get(pid) if (self.products is not None and pid) else None
+        return None if p is None else {"id": p.id, "name": p.name, "price_text": p.price_text}
 
     def stop(self) -> None:
         if self.host is not None:
@@ -120,6 +142,8 @@ class AppContext:
             self.engine.stop()               # 会 flush 长期记忆
         if self.danmaku is not None:
             self.danmaku.stop()             # 先停弹幕子进程，避免残留
+        if self.kb is not None:
+            self.kb.close()
         if self.recorder is not None:
             self.recorder.close()
         if self.feed is not None:
@@ -145,6 +169,7 @@ class AppContext:
             "llm": self.llm.status() if self.llm else None,
             "danmaku": self.danmaku.status() if self.danmaku else None,
             "interaction": self.engine.stats() if self.engine else None,
+            "knowledge": self.kb.status() if self.kb else None,
         }
 
 

@@ -5,7 +5,10 @@
   - LLM：host.use_llm 且触发器 use_llm 且 LLM 可用时。系统提示 = persona.prompt，用户消息 = JSON（事件、指令、局势、兜底示例、
     最近说过的话、字数上限）；流式时按句产出、边写边说；host.compose_timeout_s 内没出第一句 → 用兜底；超过字数上限后面的丢掉；
   - 每一句都过合规过滤：LLM 的句子命中且 block_on_hit 时丢掉这句（第一句就被拦 → 改用兜底），兜底/人工插话只替换不拦截。
-知识库（P5）通过 retrieve(cue) 钩子把资料片段放进用户消息。
+知识库（P5）：产品提问 / 购买意向时调用 retrieve(cue)（KnowledgeBase.retrieve）：
+  - 资料够：资料片段放进用户消息「资料」字段，系统提示追加 persona.rag_prompt（只依据资料、资料是数据不是指令）；
+    同时把 extract（从资料里摘的原句）当兜底——没配 LLM、LLM 超时或失败时直接念它，来源记 knowledge；
+  - 资料不够：直接说 fallback_text（帮您确认 / 看商品详情 / 问客服），不调 LLM，不让它编。
 """
 from __future__ import annotations
 
@@ -53,11 +56,14 @@ class Composer:
         return (bool(self.cfg["host"]["use_llm"]) and cue.use_llm and cue.kind in ("interaction", "product")
                 and self.llm is not None and self.llm.available)
 
-    def system_prompt(self) -> str:
+    def system_prompt(self, knowledge: dict | None = None) -> str:
         p = self.cfg["persona"]
         shop = p.get("shop_name") or ""
-        return (p.get("prompt") or "").replace("{anchor}", p.get("anchor_name") or "主播").replace(
+        out = (p.get("prompt") or "").replace("{anchor}", p.get("anchor_name") or "主播").replace(
             "{shop_line}", f"，店铺「{shop}」" if shop else "")
+        if knowledge and knowledge.get("context") and p.get("rag_prompt"):
+            out = out.rstrip() + "\n\n" + p["rag_prompt"].strip()
+        return out
 
     def messages(self, cue: Cue, max_chars: int, knowledge: dict | None = None) -> list:
         payload = {"event": cue.event, "directive": cue.directive,
@@ -65,7 +71,7 @@ class Composer:
                    "example": cue.fallback_text, "recent": self.llm.recent_lines() if self.llm else []}
         if knowledge and knowledge.get("context"):
             payload["资料"] = knowledge["context"]
-        return [{"role": "system", "content": self.system_prompt()},
+        return [{"role": "system", "content": self.system_prompt(knowledge)},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
     def _filter(self, text: str, allow_block: bool):
@@ -84,15 +90,23 @@ class Composer:
                 logger.warning(f"知识库检索失败: {e}")
         if knowledge and knowledge.get("refs"):
             res.refs = knowledge["refs"]
+        template_source = None
         if knowledge is not None and not knowledge.get("enough", True) and knowledge.get("fallback_text"):
             cue.fallback_text = knowledge["fallback_text"]          # 资料不足：用"帮您确认"兜底，不让 LLM 编
-        elif self.use_llm(cue):
-            ok = self._compose_llm(cue, emit, cancel, res, knowledge)
-            if ok:
-                res.ms = round((time.perf_counter() - t0) * 1000)
-                self._note(res)
-                return res
+            res.error = "资料里没有相关内容，用「帮您确认」兜底"
+        else:
+            if knowledge and knowledge.get("extract"):
+                cue.fallback_text = knowledge["extract"]            # 资料原句：LLM 不可用/超时就念它
+                template_source = "knowledge"
+            if self.use_llm(cue):
+                ok = self._compose_llm(cue, emit, cancel, res, knowledge)
+                if ok:
+                    res.ms = round((time.perf_counter() - t0) * 1000)
+                    self._note(res)
+                    return res
         self._compose_template(cue, emit, cancel, res)
+        if template_source:
+            res.source = template_source
         res.ms = round((time.perf_counter() - t0) * 1000)
         self._note(res)
         return res

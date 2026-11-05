@@ -28,7 +28,7 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存。另含 `services`（各服务状态）：`tts` `{requested, engine(实际在用), chain, error(首选不可用原因), warning(超每日上限等), calls, failures, fallbacks, last_ms, last_engine, last_error, cache{enabled, hits, miss, rate, mem_entries}, today_chars{引擎: 字数}, daily_max_chars}`；`llm` `{provider, model, available, reason, calls, failures, last_ms, last_ttft_ms, last_error, today_calls, daily_max_calls}`；`danmaku` 同 `/api/danmaku/status`、`admin.token_set`、`settings.{version, pending_restart}` |
+| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存。另含 `services`（各服务状态）：`tts` `{requested, engine(实际在用), chain, error(首选不可用原因), warning(超每日上限等), calls, failures, fallbacks, last_ms, last_engine, last_error, cache{enabled, hits, miss, rate, mem_entries}, today_chars{引擎: 字数}, daily_max_chars}`；`llm` `{provider, model, available, reason, calls, failures, last_ms, last_ttft_ms, last_error, today_calls, daily_max_calls}`；`danmaku` 同 `/api/danmaku/status`、`interaction`（互动引擎计数）、`knowledge` 同 `/api/kb/status`、`admin.token_set`、`settings.{version, pending_restart}` |
 | GET | `/api/tts/voices` | `{"engine", "default", "voices": [{"id", "name"}]}` |
 
 ## 设置中心
@@ -69,12 +69,40 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | PUT | `/api/interaction/triggers/{name}` | `{enabled?, priority?, cooldown_s?, emotion?, target_energy?, directive?, lines?, max_stale_s?, use_llm?}` | 修改一个触发器（写入设置 `interaction.triggers`，立即生效、可在设置历史里回滚）；未知触发器 404，priority 不在 0~100 时 400 |
 | POST | `/api/interaction/triggers/{name}/reset` | | 恢复出厂 |
 | GET | `/api/interaction/queue` | | 排队中的 cue `[{id, event, priority, kind, waited_s, stale_s, text, reason}]` |
-| GET | `/api/interaction/log?limit=100` | | 决策日志（新的在前）：`{id, ts, event, kind, priority, reason, source{msg_id, nickname, content}, status(queued/composing/speaking/spoken/interrupted/dropped/failed/timeout/empty), text, text_source(template/llm/knowledge/manual/script), fallback_text, compliance_hits, compose_ms, latency_ms, request_id, duration_s, note}` |
+| GET | `/api/interaction/log?limit=100` | | 决策日志（新的在前）：`{id, ts, event, kind, priority, reason, source{msg_id, nickname, content}, status(queued/composing/speaking/spoken/interrupted/dropped/failed/timeout/empty), text, text_source(template/llm/knowledge/manual/script), fallback_text, compliance_hits, compose_ms, latency_ms, request_id, duration_s, note, refs(知识库依据的片段)}` |
 | POST | `/api/interaction/pause` / `resume` | | 暂停 / 恢复互动（设置 `host.pause_interaction`；暂停时清空队列） |
-| GET | `/api/host/status` | | `{enabled, session_id, session_ok, current{cue_id, event, kind, priority, reason, text, text_source, request_id, interruptible, elapsed_s}, queue[前 10 条], queue_size, pause_interaction, pause_script, script_active, script, history[最近 10 条]}` |
+| GET | `/api/host/status` | | `{enabled, session_id, session_ok, current{cue_id, event, kind, priority, reason, text, text_source, request_id, interruptible, elapsed_s}, queue[前 10 条], queue_size, pause_interaction, pause_script, script_active, script, history[最近 10 条]}`；`script` = `{product_id, product_name, segment(下一段/正在讲第几段，从 1 起), segments(可播段数), speaking, next_text, elapsed_s, duration_s, spoken, rotations, inactive_reason, rotation[{id, name}]}` |
 | POST | `/api/host/say` | `{text, interrupt?}` | 人工插话：优先级 `host.manual_priority`（默认 90），过合规；`interrupt=true` 先打断当前播报。返回 `{cue_id, priority}` |
 | POST | `/api/host/interrupt` | | 打断主持人当前播报 |
-| POST | `/api/host/script/pause` / `resume` / `next` | | 暂停 / 恢复讲品、跳到下一段（讲品内容在 P5 接入，之前 `next` 返回 409） |
+| POST | `/api/host/script/pause` / `resume` | | 暂停 / 恢复讲品（设置 `host.pause_script`） |
+| POST | `/api/host/script/next` | | 跳到下一段（正在讲讲品段时先打断它）；没有可讲的讲解稿 409（`detail` 说明原因）。返回 `/api/host/status` |
+| POST | `/api/host/product/{id}/activate` | | 设为当前讲解的产品（正在讲的讲品段被打断，立即换；话术 `{product}` 与知识库检索范围跟着换）；没有该产品 404 |
+| POST | `/api/host/product/next` / `prev` | | 在启用的产品里切到下一个 / 上一个；没有启用的产品 409 |
+
+## 产品与知识库
+
+| 方法 | 路径 | 请求 | 说明 |
+|---|---|---|---|
+| GET | `/api/products` | | `{items[产品], active_id, script(同 host status 的 script)}`，按轮播顺序。产品：`{id, name, price_text, selling_points[], segments[{id, text, confirmed, source(manual/llm/template), hits[], updated_at}], video_ids[], enabled, order, duration_s(null=默认), notes, created_at, updated_at, docs(资料数), playable(可播段数), is_current}` |
+| POST | `/api/products` | `{name, price_text?, selling_points?(列表或换行分隔), enabled?, duration_s?, notes?}` | 新建（排在最后）；名称空 / 超 60 字 / 时长不在 30~7200 → 400 |
+| GET | `/api/products/{id}` | | 产品 + `doc_list`（它的资料） |
+| PUT | `/api/products/{id}` | 同上任意字段 | 修改；`duration_s: null` = 用 `products.duration_s` |
+| DELETE | `/api/products/{id}?delete_docs=true` | | 删除产品；默认连同它的资料一起删（`delete_docs=false` 则资料转为公共资料）。返回 `{ok, deleted_docs}` |
+| PUT | `/api/products/order` | `{ids: [...]}` | 轮播顺序（没列出的排在后面） |
+| PUT | `/api/products/{id}/script` | `{segments: [{id?, text, confirmed}]}` | 保存讲解稿（≤ 50 段、每段 ≤ 500 字）；文本改过的段来源记为 manual |
+| POST | `/api/products/{id}/script/generate` | `{segments?: 2~12, replace_unconfirmed?: true}` | 用知识库生成讲解稿（LLM；不可用时模板草稿），每段过合规、标待确认；默认替换旧的待确认段、保留已确认段。返回 `{product, generated, source(llm/template), error(为什么没用 LLM), refs(用到的资料块数), ms}` |
+| POST | `/api/products/{id}/script/confirm` | `{ids?: [...], confirmed?: true}` | 确认（或取消确认）指定段，不给 ids = 全部 |
+| GET | `/api/kb/status` | | `{backend(设置的), active_backend(实际在用), fts5, warning, docs, by_status{状态: 数量}, chunks, stale_docs(切块参数改过待重建), index{…}, supported[扩展名], max_doc_mb}` |
+| GET | `/api/kb/docs?product_id=` | | 文档列表：不带参数 = 全部；`product_id=`（空）= 公共资料；`product_id=xxx` = 该产品。每项 `{id, name, ext, product_id, size, sha1, title, pages, chunks, chars, status(queued/parsing/indexing/ready/failed), error, chunk_chars, chunk_overlap, created_at, updated_at, stale}` |
+| POST | `/api/kb/docs` | multipart：`files`（可多个；md/markdown/txt/html/htm/pdf）、`product_id`（空 = 公共资料） | 上传并排队入库，立即返回各文件的记录（`status=queued`；内容与已有文档相同则返回已有记录并带 `duplicate: true`；单个文件不合格的那项 `status=rejected` + `error`；全部不合格 400）。存盘文件名是随机 ID；进度经 `/ws/console` 的 `kb.ingest` 推送 |
+| GET | `/api/kb/docs/{id}?chunks=false` | | 文档详情；`chunks=true` 时带 `chunk_list[{id, seq, heading, text, page, …}]` |
+| PUT | `/api/kb/docs/{id}` | `{product_id}` | 改关联产品（空 = 公共资料） |
+| DELETE | `/api/kb/docs/{id}` | | 删除文档、切块、索引和原文件 |
+| POST | `/api/kb/reindex` | `{doc_id?}` | 重新解析 + 切块 + 建索引（改了切块参数后用）；不给 doc_id = 全部并重建索引。返回 `{queued: [doc_id]}` |
+| GET | `/api/kb/search?q=&product_id=&k=&include_global=true` | | 检索测试：`{query, product_id, terms(检索词), groups(信息点及同义写法), coverage, matched, enough(资料够不够), backend, ms, hits[{chunk_id, doc_id, doc_name, product_id, heading, page, text, score, backend, matched}]}`；不带 product_id = 全部资料 |
+| POST | `/api/kb/answer` | `{question, product_id?, speak?: false, interrupt?: false, nickname?, gender?}` | 回答测试：走直播里同一条路径（检索 → LLM 或资料原句 → 合规），返回 `{text, sentences, source(knowledge/llm/template), refs, hits(合规命中), ms, note, product_id}`；`speak=true` 时把这句交给主持人说（人工插话优先级），多返回 `cue_id`。不给 product_id 用当前讲解的产品 |
+
+写词时的知识库规则见 ARCHITECTURE §13：资料够就用资料（LLM 写或念原句），不够就说「帮您确认 / 看商品详情 / 问客服」。
 
 ## 观众（长期记忆）
 
@@ -90,7 +118,9 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 
 连接后先收到 `{"topic": "hello", "data": {"recent": {主题: [最近的消息…]}}}`，之后每条消息形如
 `{"topic": "settings.changed", "ts": 1730000000.0, "data": {...}}`。当前推送的主题：`settings.changed`、`env.changed`、`danmaku.status`、`live.event`、`interaction.cue`（`Cue.to_dict()`）、
-`host.action`（决策日志条目，字段同 `/api/interaction/log`，状态每变一次推一次）。
+`host.action`（决策日志条目，字段同 `/api/interaction/log`，状态每变一次推一次）、
+`kb.ingest`（`{kind: "doc", doc_id, name, product_id, status(queued/parsing/indexing/ready/failed/deleted/moved), progress, chunks, error, ms}`
+或索引重建 `{kind: "index", status: "rebuilt", backend}`）、`products.changed`（`{reason(create/update/script/order/delete/active), product_id, active_id}`）。
 
 `live.event` 推给 Web 前节流：一般事件 `data` 就是 `LiveEvent.to_dict()`；点赞合并为
 `{"type": "like_batch", "count", "events", "users": [{nickname, count}], "total", "ts"}`，普通进场合并为
