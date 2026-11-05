@@ -4,7 +4,7 @@
 
 | 需求 | 实现 |
 |---|---|
-| 实时接收画面 | WebSocket 推流（JPEG + 40ms PCM 一帧一包，带序号/时间戳），网页客户端音画同步播放；`/?view=1` 纯画面模式可直接给 OBS 用 |
+| 实时接收画面 | WebSocket 推流（JPEG + 40ms PCM 一帧一包，带序号/时间戳），网页客户端音画同步播放；`/scene` 完整直播画面、`/?view=1` 纯数字人画面，都可直接给 OBS 用 |
 | 没有 TTS 时画面不能静止 | 模型一直在跑：没有语音就喂"空闲音频"（默认 -55dB 底噪，可换真人呼吸声），持续生成眨眼、微动 |
 | 有 TTS 就实时讲话 | 文本 → 切句 → TTS → 写入语音缓冲；下一块直接用语音驱动，空闲 ↔ 说话无缝衔接 |
 | 画面不能太僵硬 | 块之间用运动帧接续；空闲底噪替代纯静音；TTS 响度归一化；句首尾淡入淡出（可调参数见下） |
@@ -16,6 +16,7 @@
 | 弹幕自动互动（第二阶段） | 导演层（移植参考项目）按优先级决定先谢礼、先答问题还是欢迎进场：礼物 S/M/L 分档、连续送礼、回踩、榜首易主、金主/熟客/高财富等级分级欢迎、关注/粉丝团/分享/点赞、人数猛涨承接、产品提问、购买意向；跨场长期记忆；模板话术零延迟，配了 LLM 用 LLM 写词（超时自动兜底）；所有台词过合规过滤；Web 可看决策日志、改触发器 |
 | 产品知识库与讲品（第二阶段） | 上传 html / pdf / md 产品资料（可关联产品，或作为公共资料），自动解析、切块、建索引（SQLite FTS5 + jieba；可选向量混合检索）；观众问产品问题时只依据资料回答（配了 LLM 由 LLM 组织语言，没配就念资料原句），资料里没有就说「帮您确认 / 看商品详情 / 问客服」，不编造；讲解稿可一键用知识库生成（过合规、人工确认后才播），没有弹幕时按讲解稿轮播讲品，有互动先回应再断点续讲 |
 | 视频素材与直播画面（第二阶段） | 上传产品视频 / 背景图；直播场景页 `/scene`（竖屏 720×1280，给 OBS 用）= 背景 + 视频 + 数字人 + 产品卡片 + 字幕 + 常驻 AI 标识；视频可全屏 / 画中画 / 分屏、原声或静音，手动「立即播放」或讲品时自动插播；带原声时讲品暂停、数字人声音压低，播完回到数字人并续讲，数字人画面全程不断 |
+| 火山 TTS + 大模型（第二阶段） | 火山声音复刻 TTS（V3 SSE，合成缓存、语速、每日字数上限，没凭证自动回退 edge → mock）；OpenAI 兼容 LLM（`.env` 配置，流式按句播报，超时 / 失败 / 没配置一律回退模板话术）；Embedding 可选 |
 | 所有参数网页可改（第二阶段） | 「直播间设置」页按 schema 自动生成，标「即时生效 / 需重启」；导出/导入/历史回滚；写操作需口令 |
 
 ---
@@ -27,7 +28,7 @@ live/                       服务层（Python 包）
   server.py                 FastAPI app 工厂 + 写操作鉴权中间件
   app_context.py            统一构造、注入所有服务（AppContext）
   api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、media、console_ws）
-  core/                     统一事件模型 events、事件总线 bus、实现注册表 registry、可注入时钟 clock
+  core/                     统一事件模型 events、事件总线 bus、实现注册表 registry、可注入时钟 clock、每日计费用量 usage
   settings/                 设置中心：schema（所有配置项的单一来源）、store（三层合并 + 热更新 + 版本回滚）、env（.env 密钥）
   feed.py                   控制台推送（事件总线 → /ws/console，点赞/进场节流）
   interaction/              互动引擎：director（导演）、state、memory（长期记忆）、queue、intent、compliance、engine；
@@ -49,7 +50,8 @@ live/                       服务层（Python 包）
   config.py                 load_config()（DEFAULTS 由 settings/schema.py 生成）
   configs/live.yaml         正式配置（Windows + 双 4090）
   configs/mock.yaml         无模型调试配置
-  tts/                      TTS 引擎：edge（默认）/ http（对接自建 TTS）/ mock；service.py 可热切换的统一入口
+  tts/                      TTS 引擎：volc（火山声音复刻）/ edge / http（对接自建 TTS）/ mock；cache.py 合成缓存；service.py 回退链 + 每日上限 + 热切换
+  llm/                      大模型：base（接口）、openai_compat（OpenAI 兼容，读 .env）、mock、service（统计 / 每日上限 / 防复读）、text（流式按句切）
   worker/                   推理子进程
     process.py              子进程主循环（按优先级执行命令）
     flashhead_runner.py     真实 FlashHead 推理（lite/pro、多会话状态切换、模型切换接续）
@@ -70,7 +72,9 @@ tests/live/
   test_e2e_commerce.py      带货全链路（起 mock 服务后运行，16 项）
   test_e2e_products.py      讲品 + 知识库（起 mock 服务后运行，15 项）
   test_e2e_scene.py         视频素材 + 直播场景（起 mock 服务后运行，需 ffmpeg，15 项）
-  test_*.py                 pytest 单元/集成测试（python -m pytest tests/live -q -m "not e2e"）
+  test_*.py                 pytest 单元/集成测试（python -m pytest tests/live -q；不起服务、不调计费接口）
+  page_sweep.js             网页走查脚本（DevTools 协议执行：各页面横向溢出 / JS 报错）
+tests/fixtures/             自造样例：知识库资料（md / html / pdf）、火山 SSE 响应
 live_server.py              启动脚本
 start_live.bat / start_live_mock.bat
 requirements_live.txt
@@ -89,10 +93,12 @@ requirements_live.txt
 conda create -n flashhead python=3.10 -y
 conda activate flashhead
 pip install fastapi "uvicorn[standard]" python-multipart pydantic pyyaml "numpy<2" "opencv-python<4.12" loguru edge-tts requests python-dotenv
+pip install jieba pypdf beautifulsoup4 rank_bm25          :: 产品知识库（不装也能启动，只是上传资料会失败）
 python live_server.py --config live/configs/mock.yaml
 ```
 
-（第二阶段的知识库、弹幕、测试依赖在 `requirements_live.txt` 的「真实模型推理」一段之前，mock 调试只需要装前面这几段。）
+这几行就是 `requirements_live.txt` 里「真实模型推理」之前的几段（抖音弹幕那段只有接真实直播间才要；跑测试再装 pytest httpx websockets）。
+**ffmpeg 要在 PATH 里**：推送音频、离线视频、edge-tts 解码、视频素材的时长/封面（ffprobe）都要用。
 
 浏览器打开 <http://127.0.0.1:8000/>，在「直播控制台」点「连接」：能看到参考图在微动（左上角显示 `MOCK LITE IDLE`），
 在「人工插话」输入文字点「说」，嘴会按合成音张合，字幕同步显示。mock 模拟了两张卡：default 直播在 GPU0，离线任务在 GPU1。
@@ -163,6 +169,7 @@ python live_server.py --config live/configs/live.yaml
    在「弹幕互动 → 粘贴 cookie」或「直播间设置 → 密钥与凭证」粘贴。只保存在本机 `secrets/douyin_cookie.txt`（已 gitignore），网页只写不读，约 2 个月过期。
 4. 没有直播间时：来源选「模拟弹幕」点连接（速率、各类比例、产品提问占比、性别比例、财富等级分布在设置里调），或在「模拟」页一键注入各类事件；
    打开「录制事件」会写 `live_data/events/*.jsonl`，可在「模拟」页回放。
+5. 「连接」会把「接入弹幕」开关存进设置，**服务重启后自动重连**同一来源；不想要就先「断开」再停服务。
 
 连上之后数字人会自动互动：谢礼物、答产品问题、欢迎进场、承接人数猛涨……「弹幕互动 → 决策日志」能看到每一句是哪个事件、
 哪个触发器、模板还是 LLM 写的；「触发器」页可以改优先级、冷却和话术；「直播控制台」有「暂停互动」和「人工插话」（最高优先级，可先打断）。
@@ -273,6 +280,10 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ## 已验证 / 未验证
 
+第二阶段（P0–P8）完成时的测试：pytest 199 项 + 端到端 33（mock 原有）+ 16（带货互动）+ 15（讲品知识库）+ 15（视频场景）项
++ 真实推理后端逻辑 18 项全部通过，**全程没有调用任何计费接口**；07 §4 人工验收清单 mock 模式逐条走查结果见
+[任务书进度表](docs/tasks/phase2-live-commerce/README.md)。还需要你在真实环境验证的事项汇总在下一节。
+
 - ✅ 第二阶段 P7（网页走查）：7 个页面、30 个页面/标签视图在亮暗两套主题、1366×768 与 390 宽下无横向溢出、无 JS 报错
   （走查脚本 `tests/live/page_sweep.js`，Edge 无头 + DevTools 协议执行）；「数字人与系统」页有 TTS / LLM / 知识库与 Embedding / 弹幕子进程四张状态卡。
 - ✅ 第二阶段 P6（视频素材 + 直播场景）：pytest 8 项（ffmpeg 现场生成测试视频：ffprobe 时长/分辨率/音轨、封面、图片、
@@ -322,9 +333,29 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
   第一次接真模型时请重点看：权重加载、`torch.compile` 在 Windows 上是否可用、Lite/Pro 实际 RTF、空闲动作是否自然，
   步骤见 `docs/live/DEVELOPMENT.md`「拿到模型后第一件事」。
 
+## 需要你在真实环境验证的事项
+
+开发和测试全程用 mock（没有真实直播间、没有计费接口、没有真实模型权重、本机没装 OBS），下面这些只能由你在真实环境确认：
+
+| # | 事项 | 怎么验证 | 不对的话改哪里 |
+|---|---|---|---|
+| 1 | 平台规则 | 开播前查阅抖音对 AI 数字人直播的最新规范（标识、内容责任）；场景页左上角常驻 AI 标识，文案在 `compliance.ai_disclosure` | 标识文案；违禁词表 `compliance.*` |
+| 2 | 抖音直播间连接（游客 / 登录态） | 装 Node.js（`a_bogus.js` 要用），「弹幕互动」填自己的房间号连接，状态灯显示已连接 | 连不上先看日志与协议探针，再用上游 DouyinLiveWebFetcher 同名文件整体替换 `vendor/douyin_fetcher/` |
+| 3 | 字段表「实测」列 | 打开「协议探针」+「录制事件」开播 10 分钟，对照任务书 02 §3 核对昵称 / 财富等级 / 粉丝团 / 本场消费 / 在线人数等是否下发 | `live/danmaku/douyin/parse.py`，把结果补进 02 §3 |
+| 4 | 性别枚举 | 用已知性别的号发弹幕，看弹幕页 ♂/♀ 是否对 | `danmaku.gender_map`（默认 1=男、2=女） |
+| 5 | 礼物需要登录 cookie | 粘贴登录 cookie 后状态显示「登录态」，送礼能收到 | 「弹幕互动 → 粘贴 cookie」，约 2 个月过期 |
+| 6 | 连击礼物规律 | 连击送同一礼物，决策日志只答谢一次、数量对；看录制的 combo_count / repeat_count / group_count | `danmaku.combo_timeout_s`、`GiftComboAggregator` |
+| 7 | 关注与分享的区分、带货房间商品消息的 method 名 | 探针里看 `WebcastSocialMessage` 的 action / share_type、商品上下架时出现的新 method | `parse.py` |
+| 8 | 火山 TTS（**计费**） | `.env` 填 `VOLC_*` 后跑 `python -m live.tts.volc "测试一句"`：16k 采样率是否被服务端接受、音色对不对 | 不支持 16k 就把 `tts.volc.sample_rate` 改 24000（自动重采样） |
+| 9 | 大模型（**计费**） | `.env` 填 `LLM_*`，「数字人与系统」看可用与首字耗时；「产品与知识库 → 测试」看回答是否只用资料、讲解稿生成质量 | `persona.prompt` / `persona.rag_prompt` / `persona.script_prompt`，`host.compose_timeout_s` |
+| 10 | 向量检索（**计费，可选**） | `.env` 填 `EMBEDDING_*`、`knowledge.backend: hybrid` + `knowledge.embedding.enabled`，检索测试对比效果 | `knowledge.*` |
+| 11 | OBS 采集 | OBS 浏览器源加载 `/scene?session=default`、720×1280、勾「通过 OBS 控制音频」：画面、口型与声音同步、视频原声与数字人声音的 ducking | `scene.*`；客户端缓冲 `latency=` URL 参数 |
+| 12 | 真实模型推理 | 下载权重后按 `docs/live/DEVELOPMENT.md`「拿到模型后第一件事」：worker 加载、torch.compile、Lite/Pro 实际 RTF、空闲动作是否自然 | `models.*`、`idle.*`、`speech.*` |
+| 13 | 长时间直播 | 带真实弹幕连续跑 1 小时以上：内存、日志量、长期记忆落盘、无冷场 / 无复读 | 互动阈值 `interaction.*`、`llm.history_size` |
+
 ## 文档
 
 - [架构与原理](docs/live/ARCHITECTURE.md)
 - [接口文档](docs/live/API.md)
 - [二次开发指南](docs/live/DEVELOPMENT.md)
-- [第二阶段任务书（进行中）：弹幕互动 + 火山 TTS + LLM + 知识库 + 视频场景 + Web 设置热更新](docs/tasks/phase2-live-commerce/README.md)
+- [第二阶段任务书（P0–P8 已完成）：弹幕互动 + 火山 TTS + LLM + 知识库 + 视频场景 + Web 设置热更新](docs/tasks/phase2-live-commerce/README.md)

@@ -77,6 +77,8 @@ pytest 测试放 `tests/live/test_*.py`；夹具在 `tests/live/conftest.py`（`
 e2e 脚本**按 1 → 1b → 1c → 1d 的顺序跑**（或两次之间隔 2 分钟以上）：模拟注入事件后 2 分钟内导演仍认为"在播"，
 会出冷场话术和送礼回踩，紧接着跑 `test_e2e_mock.py` 会让"空闲帧不带说话标记"一项失败。各 e2e 脚本跑完会删掉自己建的产品/资料/测试观众，
 并把改过的设置恢复原样（原来没被 Web 覆盖的键用 reset 去掉覆盖）。
+另外注意：Web 上「连接」弹幕会把 `danmaku.enabled=true`（和来源）写进 `live_data/settings.json`，服务重启后会自动连上——跑 e2e 之前确认
+设置覆盖里没有它（「直播间设置 → 恢复默认」或 `POST /api/settings/reset {"keys": ["danmaku.enabled"]}`），否则开机就有模拟事件。
 
 `test_runner_logic.py` 用官方 `FlashHeadPipeline` 的 `prepare_params / generate` 原代码，只把 DiT、VAE、wav2vec
 换成微型假模块，验证：Windows 无 xfuser 时能导入、块大小、多会话状态互不干扰（逐位一致）、
@@ -364,6 +366,14 @@ class RtmpSink(FrameSink):
 
 ## 待办
 
+第二阶段（弹幕互动 / 火山 TTS / LLM / 知识库 / 视频场景 / Web 设置）的功能已完成，真实环境待验证的事项见 `README_LIVE.md`
+「需要你在真实环境验证的事项」。下面是还没做的：
+
+- [ ] 抖音真实直播间实测后补字段表「实测」列、核对性别枚举 / 连击规律 / 商品消息 method 名（需用户提供 cookie、确认平台规则）
+- [ ] 「数字人与系统」页显示服务日志尾部（任务书 05 §4.6 标为可选）
+- [ ] 服务端画面合成 + RTMP 直推（现在由场景页 + OBS 采集）
+- [ ] 讲解稿按产品定时插播视频（现在是每轮讲解稿的开头/结尾，`products.video_slot`），以及外部系统（投流）触发播放的定时任务
+- [ ] e2e 脚本之间的"在播"状态互相影响（见上文「测试」），可以给模拟注入加一个"测试会话结束"接口清掉导演状态
 - [ ] worker 进程崩溃后自动重启，并重建它上面的会话
 - [ ] 未预加载的模型改为后台加载，加载期间直播不停（目前切换时同步加载会补帧）
 - [ ] RTMP / WebRTC / 虚拟摄像头输出端

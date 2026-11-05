@@ -105,6 +105,11 @@ async def main():
         requests.put(f"{BASE}/api/products/{pid}/script", json={"segments": [
             {"text": "家人们看过来，这款暖暖保温杯采用双层真空设计，倒置也不漏水，上班通勤带着特别方便。", "confirmed": True},
             {"text": "容量五百毫升，装一次热水能喝一上午，颜色有奶白、雾蓝、樱花粉三种。", "confirmed": True}]})
+        segs = [s["text"] for s in requests.get(f"{BASE}/api/products/{pid}").json()["segments"]]
+
+        def is_script(text):
+            return bool(text) and any(text in s for s in segs)
+
         files = [("files", (n, open(os.path.join(tmp, n), "rb").read())) for n in ("介绍.mp4", "静音.mp4")]
         up = requests.post(f"{BASE}/api/media", files=files, data={"product_id": pid}).json()
         media_ids = [m["id"] for m in up]
@@ -131,7 +136,8 @@ async def main():
             st = requests.get(f"{BASE}/api/host/status").json()
             check("带原声视频期间讲品暂停", st["video_blocking"] and not st["script_active"])
             await c.run(2.5)
-            check("视频期间不开讲新的讲品段", not c.starts(since=t_play + 0.8), [e.get("text") for e in c.starts(since=t_play + 0.8)])
+            script_starts = [e.get("text") for e in c.starts(since=t_play + 0.8) if is_script(e.get("text"))]   # 互动（回踩等）照常说，只看讲品段
+            check("视频期间不开讲新的讲品段", not script_starts, script_starts)
             t_end = time.time()
             await sws.send(json.dumps({"type": "scene.video_ended", "play_id": "not-this-one"}))
             await sws.send(json.dumps({"type": "scene.video_ended", "play_id": r["video"]["play_id"]}))
