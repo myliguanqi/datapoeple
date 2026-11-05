@@ -1,0 +1,8 @@
+# 二进制文件不做换行符转换（core.autocrlf=true 时，没有 NUL 字节的 PDF 会被当成文本改换行，xref 偏移就坏了）
+*.pdf binary
+*.mp4 binary
+*.webm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.wav binary
