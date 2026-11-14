@@ -21,7 +21,8 @@ def test_intent_keywords_hot_edit(mock_cfg):
     c = I.IntentClassifier(mock_cfg)
     assert c.classify("能不能便宜点儿啊主播").kind == I.PRODUCT_QUESTION
     assert c.classify("这个香不香").kind == I.CHITCHAT
-    mock_cfg["interaction"]["intent"]["product_keywords"].append("香不香")     # Web 改词表 → 立即生效
+    spec = next(i for i in mock_cfg["persona"]["intents"] if i["name"] == I.PRODUCT_QUESTION)
+    spec["keywords"].append("香不香")                                         # 改人设关键词 → 立即生效
     assert c.classify("这个香不香").kind == I.PRODUCT_QUESTION
 
 
@@ -65,11 +66,12 @@ def test_compliance_disabled_and_editable(mock_cfg):
 
 
 def test_policy_lines_are_compliant():
-    """出厂话术本身不能命中违禁词（否则过滤后会变得不通顺）。"""
+    """所有出厂人设的出厂话术本身不能命中违禁词（否则过滤后会变得不通顺）。"""
     from live.config import load_config
-    from live.interaction.director import load_policy
+    from live.personas.store import builtin_ids, load_builtin
     cfg = load_config(None)
     cp = Compliance(cfg)
-    for name, spec in load_policy().items():
-        for line in list(spec.get("lines") or []) + [spec.get("merge_clause") or ""]:
-            assert cp.filter(str(line)).hits == [], (name, line)
+    for pid in builtin_ids():
+        for name, spec in load_builtin(pid)["triggers"].items():
+            for line in list(spec.get("lines") or []) + [spec.get("merge_clause") or ""]:
+                assert cp.filter(str(line)).hits == [], (pid, name, line)

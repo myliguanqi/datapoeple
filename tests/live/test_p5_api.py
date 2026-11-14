@@ -113,8 +113,11 @@ def test_settings_schema_has_p5_groups(make_client):
     c, ctx = make_client()
     keys = {f["key"]: f for f in c.get("/api/settings").json()["fields"]}
     for k in ("knowledge.backend", "knowledge.top_k", "knowledge.min_coverage", "knowledge.chunk_chars", "products.rotation_enabled",
-              "products.duration_s", "products.segment_gap_s", "products.require_confirmed_script", "persona.rag_prompt"):
+              "products.duration_s", "products.segment_gap_s", "products.require_confirmed_script",
+              "host.use_llm", "host.reply_max_chars", "host.answer_max_chars"):
         assert k in keys and keys[k]["apply"] == "hot", k
+    assert keys["personas.default"]["apply"] == "restart"
+    assert not any(k.startswith("persona.") and k != "personas.default" for k in keys)   # 人设内容在模板里，不在全局设置
     assert keys["knowledge.backend"]["group"] == "knowledge"
     r = c.put("/api/settings", json={"changes": {"knowledge.backend": "bm25"}}).json()
     assert r["ok"] and "knowledge.backend" in r["applied"]

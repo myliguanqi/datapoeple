@@ -104,7 +104,7 @@ def test_generate_template_when_llm_unavailable(store, kb, mock_cfg, tmp_path):
     r = ScriptGenerator(mock_cfg, llm, kb, Compliance(mock_cfg)).generate(p, 5)
     texts = [s.text for s in r["segments"]]
     assert r["source"] == "template" and "LLM 不可用" in r["error"] and len(texts) == 5
-    assert "{product}" in texts[0] and "新疆长绒棉" in texts[0] and "59 元" in texts[0]
+    assert "清风纯棉T恤" in texts[0] and "新疆长绒棉" in texts[0] and "59 元" in texts[0]
     assert any("160-168cm" in t or "尺码" in t for t in texts) and "小黄车" in texts[-1]
     assert all("100%" not in t for t in texts) and all(not s.confirmed for s in r["segments"])
     bad = MockLLM(default="不是 JSON")
@@ -163,7 +163,7 @@ def test_require_confirmed_and_skip(rot, mock_cfg, store):
     st = sc.status()
     assert st["product_name"] == "保温杯" and st["segments"] == 2 and st["speaking"]
     assert sc.step_product(1) == b.id and sc.step_product(1) == c.id and sc.step_product(-1) == b.id
-    assert sc.context() == {"product_name": "T恤", "product_id": b.id, "price_text": ""}
+    assert sc.context() == {"product_name": "T恤", "product_id": b.id, "price_text": "", "item_label": "商品"}
 
 
 def test_rotation_disabled_or_product_disabled(rot, mock_cfg, store):

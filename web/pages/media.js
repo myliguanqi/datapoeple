@@ -1,5 +1,5 @@
-// 视频素材：上传（拖拽多文件）、网格卡片（封面、时长、分辨率、有无声音、关联产品）、预览、立即播放（全屏 / 画中画 / 分屏，原声 / 静音）、
-// 关联产品、删除（被产品或背景引用时二次确认）、图片设为直播画面背景；顶部显示当前会话「正在播放」与停止。
+// 视频素材：上传（拖拽多文件）、网格卡片（封面、时长、分辨率、有无声音、关联节目条目）、预览、立即播放（全屏 / 画中画 / 分屏，原声 / 静音）、
+// 关联节目条目、删除（被条目或背景引用时二次确认）、图片设为直播画面背景；顶部显示当前会话「正在播放」与停止。
 import { badge, busy, card, cardHead, confirmDialog, empty, h, modal, toast } from '../ui.js';
 
 export const title = '视频素材';
@@ -42,7 +42,7 @@ export async function mount(el, app) {
   function renderNow(sc) {
     const v = sc.video;
     if (!v) {
-      nowBox.replaceChildren(h('span', { class: 'muted' }, `没有在播视频 · 布局 ${sc.layout === 'dh_with_card' ? '数字人 + 产品卡片' : '数字人'}`));
+      nowBox.replaceChildren(h('span', { class: 'muted' }, `没有在播视频 · 布局 ${sc.layout === 'dh_with_card' ? '数字人 + 条目卡片' : '数字人'}`));
       return;
     }
     const stop = h('button', { type: 'button', class: 'danger' }, '停止');
@@ -92,7 +92,7 @@ export async function mount(el, app) {
   function render() {
     const list = items.filter((it) => !filter.value || it.kind === filter.value);
     grid.replaceChildren(...list.map(tile));
-    if (!list.length) grid.append(empty('还没有素材', '上传产品视频（以后可以用来投流承接），或一张背景图。'));
+    if (!list.length) grid.append(empty('还没有素材', '上传视频素材（节目条目、讲解视频、投流承接都能用），或一张背景图。'));
   }
   function tile(it) {
     const names = it.product_ids.map((id) => products.find((p) => p.id === id)?.name).filter(Boolean);
@@ -117,7 +117,7 @@ export async function mount(el, app) {
         await app.api.post(`/api/sessions/${encodeURIComponent(app.sid)}/scene/video`, { media_id: it.id, mode: mode.value, audio: audio.value });
         toast(`正在播放「${it.name}」（${MODE[mode.value]}）`, 'ok');
       });
-      const link = h('button', { type: 'button', class: 'small' }, '关联产品');
+      const link = h('button', { type: 'button', class: 'small' }, '关联条目');
       link.onclick = () => linkDialog(it);
       actions = h('div', { class: 'row tight' }, mode, audio, play, link, h('span', { class: 'grow' }), del);
     } else {
@@ -144,8 +144,8 @@ export async function mount(el, app) {
       return h('label', { class: 'inline', style: { display: 'flex' } }, cb, p.name);
     });
     const body = h('div', { class: 'stack' }, h('div', { class: 'hint' }, '关联后，讲品时可按「讲品中自动插播视频」设置自动播放这个视频。'),
-      ...(boxes.length ? boxes : [h('div', { class: 'muted' }, '还没有产品')]));
-    const ok = await modal(`「${it.name}」关联到哪些产品`, body, [{ text: '取消', result: null },
+      ...(boxes.length ? boxes : [h('div', { class: 'muted' }, '还没有节目条目')]));
+    const ok = await modal(`「${it.name}」关联到哪些节目条目`, body, [{ text: '取消', result: null },
       { text: '保存', class: 'primary', value: () => boxes.map((b) => b.querySelector('input')).filter((x) => x.checked).map((x) => x.value) }]);
     if (ok === null || ok === undefined) return;
     await busy(null, () => app.api.put(`/api/media/${it.id}`, { product_ids: ok }));

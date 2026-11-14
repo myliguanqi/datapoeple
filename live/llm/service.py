@@ -112,6 +112,10 @@ class LLMService:
         if text and (not self.history or self.history[-1] != text):
             self.history.append(text)
 
+    def clear_history(self) -> None:
+        """切换人设：别让新人设的 LLM 把旧人设的台词当成「最近说过」。"""
+        self.history.clear()
+
     def recent_lines(self) -> list:
         n = int(self.cfg["llm"]["history_size"])
         return list(self.history)[-n:] if n > 0 else []

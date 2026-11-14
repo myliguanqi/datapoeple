@@ -13,7 +13,7 @@ async () => {
   window.addEventListener('error', (e) => errs.push(String(e.message)));
   for (const theme of ['light', 'dark']) {
     document.documentElement.setAttribute('data-theme', theme);
-    for (const pg of ['console', 'danmaku', 'products', 'media', 'settings', 'system', 'offline']) {
+    for (const pg of ['console', 'personas', 'danmaku', 'products', 'media', 'settings', 'system', 'offline']) {
       location.hash = `#/${pg}`;
       await w(1300);
       const tabs = [...document.querySelectorAll('#page .tabs button')];

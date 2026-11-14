@@ -20,7 +20,7 @@ HOT, RESTART = "hot", "restart"
 GROUPS = [
     ("danmaku", "直播间与弹幕"),
     ("interaction", "互动策略"),
-    ("persona", "主播人设"),
+    ("persona", "主持人"),
     ("tts", "语音（TTS）"),
     ("llm", "大模型（LLM）"),
     ("knowledge", "知识库与讲品"),
@@ -223,19 +223,6 @@ FIELDS += [
 
 
 # ============================================================================ 互动策略 / 主持人 / 人设 / 合规（第二阶段 P4）
-import os as _os
-
-_POLICY_DIR = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "interaction", "policies")
-
-
-def _read_policy(name: str) -> str:
-    try:
-        with open(_os.path.join(_POLICY_DIR, name), "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return ""
-
-
 _IA = dict(group="interaction")
 _PS = dict(group="persona")
 _CP = dict(group="compliance")
@@ -276,24 +263,14 @@ FIELDS += [
     F("interaction.online.surge_min", "int", 5, "人数猛涨门槛", "窗口内在线净涨 ≥ 此值（投流来人时承接）", min=1, max=100000, **_IA),
     F("interaction.online.drain_min", "int", 5, "人数下滑门槛", "窗口内在线净减 ≥ 此值", min=1, max=100000, **_IA),
     F("interaction.online.milestone_step", "int", 50, "在线破整台阶", "在线每过这个整数台阶感谢一次（0 = 关）", min=0, max=1000000, **_IA),
-    F("interaction.triggers", "dict", {}, "触发器覆盖", "按触发器名覆盖出厂表（policies/commerce.yaml）的字段：enabled / priority / cooldown_s / "
-      "emotion / directive / lines / max_stale_s / use_llm。一般在「弹幕互动 → 触发器」表格里改", **_IA),
-    F("interaction.intent.product_keywords", "list",
-      ["多少钱", "价格", "价钱", "几块", "优惠", "券", "便宜", "尺码", "码数", "多大", "尺寸", "规格", "颜色", "材质", "成分", "配料",
-       "保质期", "保修", "质保", "发货", "快递", "包邮", "运费", "售后", "退", "换货", "怎么用", "能用", "适合", "效果", "多久", "多重",
-       "容量", "产地", "正品", "链接", "有货", "库存", "赠品", "区别", "哪个好", "介绍", "讲讲"],
-      "产品提问关键词", "弹幕命中任一个就当产品提问（走知识库回答）", item_type="str", **_IA),
-    F("interaction.intent.purchase_keywords", "list",
-      ["要了", "拍了", "已拍", "下单", "已下单", "买了", "怎么拍", "怎么买", "几号链接", "上链接", "我要", "来一单", "抢到"],
-      "购买意向关键词", "命中就引导去小黄车下单", item_type="str", **_IA),
-    F("interaction.intent.spam_keywords", "list", ["加微信", "加v", "vx", "私我", "代刷", "兼职", "引流"],
-      "垃圾弹幕关键词", "命中的弹幕不回应", item_type="str", **_IA),
     F("interaction.intent.llm_classify", "bool", False, "关键词没命中时用 LLM 判意图", "多一次 LLM 调用（计费），默认关", **_IA),
     F("interaction.memory.enabled", "bool", True, "跨场长期记忆", "记住发过弹幕/送过礼/关注过的观众（金主、熟客识别）；纯进场不建档", **_IA),
     F("interaction.memory.flush_interval_s", "float", 30.0, "长期记忆落盘间隔（秒）", min=1, max=600, **_IA),
     F("interaction.memory.record_test_events", "bool", False, "测试事件也进长期记忆",
       "模拟注入 / mock 弹幕源 / 回放的事件默认不写长期记忆（免得假观众污染真实数据、回放重复累计）；测金主/熟客识别时临时打开", **_IA),
 
+    F("personas.default", "str", "commerce", "默认人设", "没有在「人设」页选过人设时用哪个（出厂：commerce 带货主播 / explainer 讲解·系统介绍 / "
+      "entertainment 娱乐主播）。人设本身（提示词、触发器、意图关键词、称呼、节目单叫法）在「人设」页编辑，不在这里", apply="restart", **_PS),
     F("host.enabled", "bool", True, "主持人开关", "关掉后数字人不自动说话（人工插话除外）", **_PS),
     F("host.session_id", "str", "default", "主持的直播会话", "主持人只控制这一路会话", **_PS),
     F("host.interrupt_priority", "int", 50, "打断讲品的优先级", "新互动优先级 ≥ 此值时打断正在讲的讲品段，回应完再续讲", min=0, max=100,
@@ -305,15 +282,9 @@ FIELDS += [
       min=0, max=100, **_PS),
     F("host.use_llm", "bool", True, "允许 LLM 写词", "触发器标了 use_llm 且 LLM 可用时才用；关掉则全部走模板", **_PS),
     F("host.compose_timeout_s", "float", 6.0, "写词超时（秒）", "LLM 超过这么久没给出第一句就用兜底话术", min=0.5, max=60, **_PS),
-    F("host.reply_max_chars", "int", 40, "互动台词最大字数", min=10, max=200, **_PS),
-    F("host.answer_max_chars", "int", 70, "产品问答最大字数", min=10, max=300, **_PS),
+    F("host.reply_max_chars", "int", 40, "互动台词最大字数", "人设可单独覆盖", min=10, max=200, **_PS),
+    F("host.answer_max_chars", "int", 70, "问答最大字数", "回答知识库类问题（人设里 qa 不是 off 的意图）时的字数上限；人设可单独覆盖", min=10, max=300, **_PS),
     F("host.speak_timeout_s", "float", 60.0, "单句播报超时（秒）", "没收到说完事件的兜底，防止主持人卡住", min=5, max=600, **_PS),
-    F("persona.anchor_name", "str", "小美", "主播自称", **_PS),
-    F("persona.shop_name", "str", "", "店铺名", **_PS),
-    F("persona.prompt", "text", _read_policy("persona_commerce.md"), "人设提示词", "LLM 写词时的系统提示；{anchor} {shop_line} 会被替换", **_PS),
-    F("persona.honorific", "dict", {"male": "哥", "female": "姐", "unknown": ""}, "称呼后缀",
-      "昵称简称后面加的字：小王哥 / 李姐；未知性别默认不加", **_PS),
-    F("persona.big_honorific", "dict", {"male": "大哥", "female": "大姐", "unknown": "家人"}, "尊称", "礼物答谢里的「大哥/大姐」", **_PS),
 
     F("compliance.enabled", "bool", True, "合规过滤", "所有要说出口的文本（模板、LLM、讲解稿、人工插话）都过一遍", **_CP),
     F("compliance.banned_words", "list",
@@ -359,8 +330,6 @@ FIELDS += [
        "什么做的": ["材质", "面料", "材料"], "颜色": ["颜色", "色"], "怎么洗": ["洗涤", "清洗", "洗"], "能用多久": ["质保", "寿命"],
        "正品": ["正品", "授权"], "怎么买": ["小黄车", "下单", "链接"]},
       "检索同义词", "问题里出现左边的词时，也用右边的词去资料里找（如「多少钱」→ 价格）；右边的词也计入覆盖度", **_KB),
-    F("knowledge.no_answer_text", "str", "{asker}，这个问题主播帮您确认一下，您也可以点开小黄车看商品详情，或者问问客服哦！", "资料没有时的话术",
-      "{asker} 是提问观众的称呼", **_KB),
     F("knowledge.embedding.enabled", "bool", False, "向量检索", "检索后端选 hybrid 时才用；上传/重建索引时会调用 .env 配置的 Embedding 接口（计费）", **_KB),
     F("knowledge.embedding.timeout_s", "float", 20.0, "Embedding 超时（秒）", min=2, max=120, **_KB),
     F("products.rotation_enabled", "bool", True, "讲品轮播", "没有互动时按讲解稿逐段讲当前产品（有高优先级互动先互动，再断点续讲）", **_KB),
@@ -372,9 +341,6 @@ FIELDS += [
     F("products.generate_segments", "int", 5, "生成讲解稿段数", min=2, max=12, **_KB),
     F("products.video_slot", "enum", "end", "讲品中自动插播视频", "产品关联了视频时，每讲完一轮讲解稿（end）或每轮开讲前（start）播一个；off = 只手动播",
       choices=("off", "start", "end"), **_KB),
-    F("persona.rag_prompt", "text", _read_policy("rag_prompt.md"), "知识库回答规则", "回答产品问题时附加在人设提示词后面（带「资料」时）", **_PS),
-    F("persona.script_prompt", "text", _read_policy("script_prompt.md"), "讲解稿生成提示词", "「用知识库生成讲解稿」时的系统提示；{anchor} {shop_line} 会被替换",
-      **_PS),
 ]
 
 

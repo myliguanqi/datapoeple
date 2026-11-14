@@ -20,7 +20,7 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 
 | 地址 | 说明 |
 |---|---|
-| `/` | 完整控制台（侧边栏分页，hash 路由：`#/console` 直播控制台、`#/danmaku` 弹幕互动、`#/products` 产品与知识库、`#/media` 视频素材、`#/settings` 直播间设置、`#/system` 数字人与系统、`#/offline` 离线视频）。参数：`session=`、`autoconnect=1`、`latency=0.3`、`subs=0` |
+| `/` | 完整控制台（侧边栏分页，hash 路由：`#/console` 直播控制台、`#/personas` 人设、`#/danmaku` 弹幕互动、`#/products` 节目与知识库、`#/media` 视频素材、`#/settings` 直播间设置、`#/system` 数字人与系统、`#/offline` 离线视频）。参数：`session=`、`autoconnect=1`、`latency=0.3`、`subs=0` |
 | `/?view=1&session=default` | 纯画面模式：全屏画面 + 字幕，自动连接、断线重连（只有数字人） |
 | `/scene?session=default` | **直播场景页**（OBS 浏览器源，宽高 = `scene.width × scene.height`，默认 720×1280）：背景 + 视频 + 数字人 + 产品卡片 + 字幕 + 常驻 AI 标识；参数 `w=&h=`（覆盖画布尺寸）、`debug=1`（布局框和状态）、`latency=0.3`、`preview=1`（静音预览） |
 | `/web/player.js` | 播放器模块（ES module），可在自己的页面里复用，用法见文件头注释 |
@@ -29,7 +29,7 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存。另含 `services`（各服务状态）：`tts` `{requested, engine(实际在用), chain, error(首选不可用原因), warning(超每日上限等), calls, failures, fallbacks, last_ms, last_engine, last_error, cache{enabled, hits, miss, rate, mem_entries}, today_chars{引擎: 字数}, daily_max_chars}`；`llm` `{provider, model, available, reason, calls, failures, last_ms, last_ttft_ms, last_error, today_calls, daily_max_calls}`；`danmaku` 同 `/api/danmaku/status`、`interaction`（互动引擎计数）、`knowledge` 同 `/api/kb/status`、`admin.token_set`、`settings.{version, pending_restart}` |
+| GET | `/api/system?refresh=false` | 版本、后端、多卡模式、每个 worker 的状态/显卡/已加载模型/错误、会话列表。`refresh=true` 会向 worker 实时查询显存。另含 `services`（各服务状态）：`tts` `{requested, engine(实际在用), chain, error(首选不可用原因), warning(超每日上限等), calls, failures, fallbacks, last_ms, last_engine, last_error, cache{enabled, hits, miss, rate, mem_entries}, today_chars{引擎: 字数}, daily_max_chars}`；`llm` `{provider, model, available, reason, calls, failures, last_ms, last_ttft_ms, last_error, today_calls, daily_max_calls}`；`danmaku` 同 `/api/danmaku/status`、`interaction`（互动引擎计数）、`knowledge` 同 `/api/kb/status`、`persona{id, name, anchor_name, busy}`、`admin.token_set`、`settings.{version, pending_restart}` |
 | GET | `/api/tts/voices` | `{"engine", "default", "voices": [{"id", "name"}]}` |
 
 ## 设置中心
@@ -62,17 +62,38 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | PUT | `/api/danmaku/cookie` | `{cookie}` | 保存抖音登录 cookie（支持整条 curl / `cookie:` 请求头 / `k=v; k=v`），**只写不读**，返回 `{configured, length, updated_at, age_days, has_sessionid}`；正在连抖音时自动重连 |
 | DELETE | `/api/danmaku/cookie` | | 删除本机保存的 cookie |
 
+## 人设模板
+
+一个「人设」= 提示词 + 弹幕意图 + 触发器 + 称呼 + 字数限制 + 知识库兜底 + 节目单叫法；节目单和知识库按人设隔离，视频素材库共用。
+出厂模板（commerce / explainer / entertainment）只读，复制成用户模板后才能改。切换只在停播时允许（没有运行中的会话、弹幕未连接、知识库不忙），
+切换会打断当前播报、清空互动队列和决策日志、换节目单与知识库目录。详细说明见 [PERSONAS.md](PERSONAS.md)。
+
+| 方法 | 路径 | 请求 | 说明 |
+|---|---|---|---|
+| GET | `/api/personas` | | `{items[摘要], active_id, active(完整当前人设), program, busy(不能切换的原因或 null)}`。摘要：`{id, name, description, builtin, source, anchor_name, item_label, triggers(数量), intents[名字], active}` |
+| GET | `/api/personas/active` | | 当前人设完整内容 + `busy` |
+| GET | `/api/personas/{id}` | | 完整模板（`prompt` / `rag_prompt` / `script_prompt` / `intents` / `triggers` / `program` / `limits` / `knowledge`）+ `trigger_diff` |
+| POST | `/api/personas/{id}/activate` | | 切换。正在直播 / 弹幕已连接 / 知识库入库中 → **409**（`detail` 说明原因）；模板不存在 404；校验失败 400 |
+| POST | `/api/personas/{id}/duplicate` | `{name?}` | 复制为新用户模板；节目单文件一起复制（`program_copied`），知识库资料不复制。返回完整新模板 |
+| PUT | `/api/personas/{id}` | 任意可编辑字段（`name` `description` `anchor_name` `shop_name` `honorific` `big_honorific` `prompt` `rag_prompt` `script_prompt` `intents` `spam_keywords` `intent_llm_hint` `knowledge` `limits` `program` `triggers`） | 保存并立即生效；出厂模板 **403**；校验失败 **400** `{detail, errors}` |
+| DELETE | `/api/personas/{id}?delete_data=false` | | 删除用户模板；默认保留节目单和知识库资料（方便人工找回），`delete_data=true` 一起删除 `programs/<id>.json` 和 `kb/<id>/`；出厂模板 403；当前人设 409 |
+| GET | `/api/personas/{id}/triggers` | | 任意人设的触发器表（字段同 `/api/interaction/triggers`，含 `default` / `overridden`；非当前人设没有 `last_fired`） |
+| POST | `/api/personas/{id}/triggers` | `{name, when, priority?, …}` | 新增触发器；名字重复 / 不合法 400 |
+| PUT | `/api/personas/{id}/triggers/{name}` | 任意触发器字段（`when` `enabled` `priority` `emotion` `target_energy` `cooldown_s` `max_stale_s` `use_llm` `role` `merge_clause` `merge_with` `directive` `lines`） | 修改一个触发器，立即生效 |
+| DELETE | `/api/personas/{id}/triggers/{name}` | | 删除触发器（至少保留一个） |
+| POST | `/api/personas/{id}/triggers/{name}/reset` | | 恢复成复制来源（出厂模板）里的值 |
+
 ## 互动与主持人
 
 | 方法 | 路径 | 请求 | 说明 |
 |---|---|---|---|
-| GET | `/api/interaction/triggers` | | 生效中的触发器表（出厂 + 覆盖），按优先级从高到低：`{name, when, priority, emotion, target_energy, cooldown_s, max_stale_s, use_llm, role, merge_clause, merge_with, directive, lines, enabled, overridden:[改过的字段], default:{出厂值}, last_fired}` |
-| PUT | `/api/interaction/triggers/{name}` | `{enabled?, priority?, cooldown_s?, emotion?, target_energy?, directive?, lines?, max_stale_s?, use_llm?}` | 修改一个触发器（写入设置 `interaction.triggers`，立即生效、可在设置历史里回滚）；未知触发器 404，priority 不在 0~100 时 400 |
-| POST | `/api/interaction/triggers/{name}/reset` | | 恢复出厂 |
+| GET | `/api/interaction/triggers` | | 当前人设生效中的触发器表，按优先级从高到低：`{name, when, priority, emotion, target_energy, cooldown_s, max_stale_s, use_llm, role, merge_clause, merge_with, directive, lines, enabled, overridden:[改过的字段], default:{复制来源里的值}, last_fired}` |
+| PUT | `/api/interaction/triggers/{name}` | `{enabled?, when?, priority?, cooldown_s?, emotion?, target_energy?, directive?, lines?, max_stale_s?, use_llm?, role?, merge_clause?, merge_with?}` | 修改当前人设的一个触发器（立即生效）；出厂模板 **403**（先复制）；未知触发器 404，priority 不在 0~100 时 400 |
+| POST | `/api/interaction/triggers/{name}/reset` | | 恢复成复制来源里的值 |
 | GET | `/api/interaction/queue` | | 排队中的 cue `[{id, event, priority, kind, waited_s, stale_s, text, reason}]` |
 | GET | `/api/interaction/log?limit=100` | | 决策日志（新的在前）：`{id, ts, event, kind, priority, reason, source{msg_id, nickname, content}, status(queued/composing/speaking/spoken/interrupted/dropped/failed/timeout/empty), text, text_source(template/llm/knowledge/manual/script), fallback_text, compliance_hits, compose_ms, latency_ms, request_id, duration_s, note, refs(知识库依据的片段)}` |
 | POST | `/api/interaction/pause` / `resume` | | 暂停 / 恢复互动（设置 `host.pause_interaction`；暂停时清空队列） |
-| GET | `/api/host/status` | | `{enabled, session_id, session_ok, current{cue_id, event, kind, priority, reason, text, text_source, request_id, interruptible, elapsed_s}, queue[前 10 条], queue_size, pause_interaction, pause_script, script_active, video_blocking(正在放带原声的视频、讲品让路), script, history[最近 10 条]}`；`script` = `{product_id, product_name, segment(下一段/正在讲第几段，从 1 起), segments(可播段数), speaking, next_text, elapsed_s, duration_s, spoken, rotations, inactive_reason, rotation[{id, name}]}` |
+| GET | `/api/host/status` | | `{enabled, session_id, session_ok, current{cue_id, event, kind, priority, reason, text, text_source, request_id, interruptible, elapsed_s}, queue[前 10 条], queue_size, pause_interaction, pause_script, script_active, video_blocking(正在放带原声的视频、讲品让路), script, history[最近 10 条]}`；`script` = `{product_id, product_name, item_label(当前人设对节目条目的叫法), show_price, card(product/title/off), segment(下一段/正在讲第几段，从 1 起), segments(可播段数), speaking, next_text, elapsed_s, duration_s, spoken, rotations, inactive_reason, rotation[{id, name}]}` |
 | POST | `/api/host/say` | `{text, interrupt?}` | 人工插话：优先级 `host.manual_priority`（默认 90），过合规；`interrupt=true` 先打断当前播报。返回 `{cue_id, priority}` |
 | POST | `/api/host/interrupt` | | 打断主持人当前播报 |
 | POST | `/api/host/script/pause` / `resume` | | 暂停 / 恢复讲品（设置 `host.pause_script`） |
@@ -80,11 +101,11 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | POST | `/api/host/product/{id}/activate` | | 设为当前讲解的产品（正在讲的讲品段被打断，立即换；话术 `{product}` 与知识库检索范围跟着换）；没有该产品 404 |
 | POST | `/api/host/product/next` / `prev` | | 在启用的产品里切到下一个 / 上一个；没有启用的产品 409 |
 
-## 产品与知识库
+## 节目与知识库
 
 | 方法 | 路径 | 请求 | 说明 |
 |---|---|---|---|
-| GET | `/api/products` | | `{items[产品], active_id, script(同 host status 的 script)}`，按轮播顺序。产品：`{id, name, price_text, selling_points[], segments[{id, text, confirmed, source(manual/llm/template), hits[], updated_at}], video_ids[], enabled, order, duration_s(null=默认), notes, created_at, updated_at, docs(资料数), playable(可播段数), is_current}` |
+| GET | `/api/products` | | `{items[节目条目], active_id, program{当前人设的 item_label/show_price/card/default_item_text/closing_line}, persona{id,name,anchor_name}, script(同 host status 的 script)}`，按轮播顺序。条目：`{id, name, price_text, selling_points[], segments[{id, text, confirmed, source(manual/llm/template), hits[], updated_at}], video_ids[], enabled, order, duration_s(null=默认), notes, created_at, updated_at, docs(资料数), playable(可播段数), is_current}`。产品/主题/节目都复用这套结构，网页按 `program.item_label` 显示 |
 | POST | `/api/products` | `{name, price_text?, selling_points?(列表或换行分隔), enabled?, duration_s?, notes?}` | 新建（排在最后）；名称空 / 超 60 字 / 时长不在 30~7200 → 400 |
 | GET | `/api/products/{id}` | | 产品 + `doc_list`（它的资料） |
 | PUT | `/api/products/{id}` | 同上任意字段 | 修改；`duration_s: null` = 用 `products.duration_s` |
@@ -93,30 +114,31 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 | PUT | `/api/products/{id}/script` | `{segments: [{id?, text, confirmed}]}` | 保存讲解稿（≤ 50 段、每段 ≤ 500 字）；文本改过的段来源记为 manual |
 | POST | `/api/products/{id}/script/generate` | `{segments?: 2~12, replace_unconfirmed?: true}` | 用知识库生成讲解稿（LLM；不可用时模板草稿），每段过合规、标待确认；默认替换旧的待确认段、保留已确认段。返回 `{product, generated, source(llm/template), error(为什么没用 LLM), refs(用到的资料块数), ms}` |
 | POST | `/api/products/{id}/script/confirm` | `{ids?: [...], confirmed?: true}` | 确认（或取消确认）指定段，不给 ids = 全部 |
-| GET | `/api/kb/status` | | `{backend(设置的), active_backend(实际在用), fts5, warning, docs, by_status{状态: 数量}, chunks, stale_docs(切块参数改过待重建), index{…}, supported[扩展名], max_doc_mb}` |
-| GET | `/api/kb/docs?product_id=` | | 文档列表：不带参数 = 全部；`product_id=`（空）= 公共资料；`product_id=xxx` = 该产品。每项 `{id, name, ext, product_id, size, sha1, title, pages, chunks, chars, status(queued/parsing/indexing/ready/failed), error, chunk_chars, chunk_overlap, created_at, updated_at, stale}` |
+| GET | `/api/kb/status` | | `{persona_id, backend(设置的), active_backend(实际在用), fts5, warning, docs, by_status{状态: 数量}, chunks, stale_docs(切块参数改过待重建), index{…}, supported[扩展名], max_doc_mb}`。只统计当前人设的知识库 |
+| GET | `/api/kb/docs?product_id=` | | 当前人设的文档列表：不带参数 = 全部；`product_id=`（空）= 当前人设的公共资料；`product_id=xxx` = 该节目条目的资料。每项 `{id, name, ext, product_id, size, sha1, title, pages, chunks, chars, status(queued/parsing/indexing/ready/failed), error, chunk_chars, chunk_overlap, created_at, updated_at, stale}` |
 | POST | `/api/kb/docs` | multipart：`files`（可多个；md/markdown/txt/html/htm/pdf）、`product_id`（空 = 公共资料） | 上传并排队入库，立即返回各文件的记录（`status=queued`；内容与已有文档相同则返回已有记录并带 `duplicate: true`；单个文件不合格的那项 `status=rejected` + `error`；全部不合格 400）。存盘文件名是随机 ID；进度经 `/ws/console` 的 `kb.ingest` 推送 |
 | GET | `/api/kb/docs/{id}?chunks=false` | | 文档详情；`chunks=true` 时带 `chunk_list[{id, seq, heading, text, page, …}]` |
 | PUT | `/api/kb/docs/{id}` | `{product_id}` | 改关联产品（空 = 公共资料） |
 | DELETE | `/api/kb/docs/{id}` | | 删除文档、切块、索引和原文件 |
 | POST | `/api/kb/reindex` | `{doc_id?}` | 重新解析 + 切块 + 建索引（改了切块参数后用）；不给 doc_id = 全部并重建索引。返回 `{queued: [doc_id]}` |
 | GET | `/api/kb/search?q=&product_id=&k=&include_global=true` | | 检索测试：`{query, product_id, terms(检索词), groups(信息点及同义写法), coverage, matched, enough(资料够不够), backend, ms, hits[{chunk_id, doc_id, doc_name, product_id, heading, page, text, score, backend, matched}]}`；不带 product_id = 全部资料 |
-| POST | `/api/kb/answer` | `{question, product_id?, speak?: false, interrupt?: false, nickname?, gender?}` | 回答测试：走直播里同一条路径（检索 → LLM 或资料原句 → 合规），返回 `{text, sentences, source(knowledge/llm/template), refs, hits(合规命中), ms, note, product_id}`；`speak=true` 时把这句交给主持人说（人工插话优先级），多返回 `cue_id`。不给 product_id 用当前讲解的产品 |
+| POST | `/api/kb/answer` | `{question, product_id?, intent?, speak?: false, interrupt?: false, nickname?, gender?}` | 回答测试：走直播里同一条路径（检索 → LLM 或资料原句 → 合规），返回 `{text, sentences, source(knowledge/llm/template), refs, hits(合规命中), ms, note, product_id}`；`intent` 指定用人设里的哪个意图回答（默认第一个 qa=strict 的意图，没有就用第一个 qa=context 的）。`speak=true` 时把这句交给主持人说（人工插话优先级），多返回 `cue_id`。不给 product_id 用当前讲解的条目 |
 
-写词时的知识库规则见 ARCHITECTURE §13：资料够就用资料（LLM 写或念原句），不够就说「帮您确认 / 看商品详情 / 问客服」。
+写词时的知识库规则见 ARCHITECTURE §13：qa=strict 的意图资料够就用资料（LLM 写或念原句），不够就说当前人设模板里的兜底话术；
+qa=context 的意图资料不够也照常回应。每个意图的 `qa` 在「人设 → 弹幕意图」里设置。
 
 ## 视频素材与直播场景
 
 | 方法 | 路径 | 请求 | 说明 |
 |---|---|---|---|
-| GET | `/api/media?kind=video\|image` | | 素材列表（新的在前）：`{id, name, ext, kind(video/image), size, mime, width, height, duration_s, has_audio, codec, audio_codec, tags, created_at, url, cover_url, product_ids, is_background}` |
+| GET | `/api/media?kind=video\|image` | | 素材列表（新的在前）：`{id, name, ext, kind(video/image), size, mime, width, height, duration_s, has_audio, codec, audio_codec, tags, created_at, url, cover_url, product_ids(当前人设节目条目里的关联), is_background}`。视频素材库各人设共用 |
 | POST | `/api/media` | multipart：`files`（可多个；mp4/webm/mov/m4v/png/jpg/jpeg/webp）、`product_id?`（上传的视频同时关联到这个产品） | 边收边写盘，大小上限 `scene.media_max_mb`；ffprobe 认不出的、没有画面的拒绝。单个文件不合格的那项 `status=rejected` + `error`；全部不合格 400 |
 | GET | `/api/media/{id}` | | 详情 |
 | GET | `/api/media/{id}/file` | | 文件本身（支持 Range，`<video>` 可拖进度；GET 不需要口令，OBS 可直接加载） |
 | GET | `/api/media/{id}/cover` | | 视频封面 jpg（没有 404） |
 | PUT | `/api/media/{id}` | `{name?, tags?, product_ids?}` | 改名 / 标签 / 关联产品（关联写在产品的 `video_ids` 上） |
 | DELETE | `/api/media/{id}?force=false` | | 被产品引用或正被用作背景时 409（`detail` 说明被谁用）；`force=true` 删除并解除关联、清空背景；正在播放的会被停掉 |
-| GET | `/api/sessions/{sid}/scene` | | 场景快照：`{session_id, version, layout(dh_full/dh_with_card/video_full/video_pip/split), reason, canvas{width, height, background{color}\|{image}\|null, dh_rect, pip_rect, card_rect}, card{enabled, style, product{id, name, price_text, selling_points[≤3]}}, video{play_id, media_id, name, url, mode, audio, loop, duration_s, has_audio, width, height, started_at, source(manual/script)}\|null, subtitle{enabled}, ducking, disclosure, blocks_script, ts}`。会话还没建也能查（场景状态与会话独立） |
+| GET | `/api/sessions/{sid}/scene` | | 场景快照：`{session_id, version, layout(dh_full/dh_with_card/video_full/video_pip/split), reason, canvas{width, height, background{color}\|{image}\|null, dh_rect, pip_rect, card_rect}, card{enabled, style, mode(product/title/off), label, product{id, name, price_text, selling_points[≤3]}}, video{play_id, media_id, name, url, mode, audio, loop, duration_s, has_audio, width, height, started_at, source(manual/script)}\|null, subtitle{enabled}, ducking, disclosure, blocks_script, ts}`。卡片显隐与字段由当前人设的 `program.card` / `program.show_price` 决定。会话还没建也能查（场景状态与会话独立） |
 | PUT | `/api/sessions/{sid}/scene` | `{card_visible?, subtitle?}` | 临时开关产品卡片 / 字幕（不改设置） |
 | POST | `/api/sessions/{sid}/scene/video` | `{media_id, mode?(full/pip/split), audio?(video/mute), loop?}` | 立即播放（没给的用 `scene.video.default_*`）；返回新快照。素材不存在 404，是图片或参数不对 400 |
 | POST | `/api/sessions/{sid}/scene/video/stop` | | 停止视频，回到数字人 |
@@ -138,7 +160,8 @@ GET 接口与画面推流不受限（局域网里其他人能看画面，但不�
 `host.action`（决策日志条目，字段同 `/api/interaction/log`，状态每变一次推一次）、
 `kb.ingest`（`{kind: "doc", doc_id, name, product_id, status(queued/parsing/indexing/ready/failed/deleted/moved), progress, chunks, error, ms}`
 或索引重建 `{kind: "index", status: "rebuilt", backend}`）、`products.changed`（`{reason(create/update/script/order/delete/active), product_id, active_id}`）、
-`media.changed`（`{reason(add/update/delete), media_id}`）、`scene.changed`（`{session_id, reason, scene: 快照}`，reason 见下表 `scene` 事件）。
+`media.changed`（`{reason(add/update/delete), media_id}`）、`scene.changed`（`{session_id, reason, scene: 快照}`，reason 见下表 `scene` 事件）、
+`persona.changed`（`{reason(switch/edit), persona: 摘要}`，切换或编辑当前人设后推送）。
 
 `live.event` 推给 Web 前节流：一般事件 `data` 就是 `LiveEvent.to_dict()`；点赞合并为
 `{"type": "like_batch", "count", "events", "users": [{nickname, count}], "total", "ts"}`，普通进场合并为

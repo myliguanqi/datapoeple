@@ -20,7 +20,7 @@ import threading
 from live.core.clock import SYSTEM_CLOCK, Clock
 from live.interaction.cue import Cue
 
-_PH = re.compile(r"\{(product|price|anchor|shop)\}")
+_PH = re.compile(r"\{(product|item|price|anchor|shop)\}")
 
 
 class ProductScript:
@@ -101,6 +101,20 @@ class ProductScript:
             self._switch(pid)
             self.last_end = -1e9
 
+    def reset(self) -> None:
+        """切换人设：节目单文件已由 ProductStore.switch_path 换好，这里清掉轮播进度。"""
+        with self._lock:
+            self.product_id = None
+            self.index = 0
+            self.video_round = -1
+            self.video_count = 0
+            self.started_at = self.clock.now()
+            self.inflight = None
+            self.last_end = -1e9
+            self.spoken = 0
+            self.rotations = 0
+            self.resolve()
+
     def step_product(self, delta: int) -> str | None:
         """上一个 / 下一个（在启用的产品里循环）。"""
         prods = [p for p in self.store.ordered() if p.enabled]
@@ -121,9 +135,9 @@ class ProductScript:
         return bool(self.pc["rotation_enabled"]) and self.current() is not None
 
     def render(self, text: str, p) -> str:
-        persona = self.cfg["persona"]
-        vals = {"product": p.name, "price": p.price_text or "", "anchor": persona.get("anchor_name") or "主播",
-                "shop": persona.get("shop_name") or ""}
+        persona = self.cfg.get("persona") or {}
+        vals = {"product": p.name, "item": p.name, "price": p.price_text or "",
+                "anchor": persona.get("anchor_name") or "主播", "shop": persona.get("shop_name") or ""}
         return _PH.sub(lambda m: vals[m.group(1)], text)
 
     def next_segment(self) -> Cue | None:
@@ -229,23 +243,30 @@ class ProductScript:
     # ------------------------------------------------------------------ 状态 / 上下文
     def context(self) -> dict:
         info = self.current_info()
-        return {} if info is None else {"product_name": info["name"], "product_id": info["id"], "price_text": info["price_text"]}
+        prog = (self.cfg.get("persona") or {}).get("program") or {}
+        return {} if info is None else {"product_name": info["name"], "product_id": info["id"],
+                                        "price_text": info["price_text"], "item_label": prog.get("item_label") or "节目"}
 
     def status(self) -> dict:
         with self._lock:
             p = self.resolve()
             segs = self.playable(p) if p else []
             now = self.clock.now()
+            persona = self.cfg.get("persona") or {}
+            prog = persona.get("program") or {}
+            label = prog.get("item_label") or "节目"
             reason = None
             if not self.pc["rotation_enabled"]:
-                reason = "讲品轮播已关闭（products.rotation_enabled）"
+                reason = "节目轮播已关闭（products.rotation_enabled）"
             elif p is None:
-                reason = "没有启用的产品"
+                reason = f"当前人设还没有启用的{label}"
             elif not segs:
-                reason = ("当前产品还没有已确认的讲解稿" if self.pc["require_confirmed_script"] else "当前产品还没有讲解稿")
+                reason = (f"当前{label}还没有已确认的讲解稿" if self.pc["require_confirmed_script"]
+                          else f"当前{label}还没有讲解稿")
             nxt_idx = (self.inflight["index"] if self.inflight else self.index) % len(segs) if segs else None
             return {
                 "product_id": p.id if p else None, "product_name": p.name if p else None,
+                "item_label": label, "show_price": bool(prog.get("show_price")), "card": prog.get("card") or "title",
                 "segment": (nxt_idx + 1) if nxt_idx is not None else None, "segments": len(segs),
                 "speaking": self.inflight is not None,
                 "next_text": self.render(segs[nxt_idx].text, p)[:60] if segs and nxt_idx is not None else None,

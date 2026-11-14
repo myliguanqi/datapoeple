@@ -20,7 +20,11 @@ class Cue:
     reason: str = ""                    # 人话版"为什么这一拍要说话"（决策日志）
     use_llm: bool = False
     user: dict | None = None            # 当事观众 ViewerProfile.to_dict()
-    question: str = ""                  # 产品提问原文
+    question: str = ""                  # 触发这条 cue 的弹幕原文（人设意图）
+    intent: str = ""                    # 命中的人设意图名（空 = 平台事件 / 人工 / 讲品）
+    qa: str = "off"                     # 该意图的问答模式 strict | context | off
+    first_come: bool = False            # 意图是否先来先答（回答后从队列消费掉这条）
+    search_suffix: str = ""             # 检索时追加的词（如购买意向加「价格 优惠 下单」）
     product_id: str | None = None
     max_stale_s: float | None = None
     interruptible: bool = False         # 讲品段等低优先级播报可被打断

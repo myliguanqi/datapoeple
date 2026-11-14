@@ -1,8 +1,8 @@
-// 产品与知识库：左边产品列表（拖动排序、上架开关、讲解中标记、公共资料），右边选中产品的 基本信息 / 讲解稿 / 资料 / 视频 / 测试。
+// 节目与知识库：左边节目条目列表（带货人设是商品，讲解/娱乐人设是主题或节目），右边选中条目的 基本信息 / 讲解稿 / 资料 / 视频 / 测试。
 // 接口：/api/products*、/api/kb/*、/api/host/product/*（见 docs/live/API.md）。kb.ingest、products.changed 经 /ws/console 实时刷新。
 import { badge, busy, card, cardHead, confirmDialog, empty, fmtDateTime, h, tabs, toast } from '../ui.js';
 
-export const title = '产品与知识库';
+export const title = '节目与知识库';
 let cleanup = [];
 const GLOBAL = '__global__';
 const SEL_KEY = 'flashhead.productSel';
@@ -27,16 +27,21 @@ export async function mount(el, app) {
   let activeId = null;
   let selected = store(SEL_KEY) || null;
   let scriptDirty = false;
+  let program = {};
+  const itemLabel = () => program.item_label || '节目';
+  const headTitle = h('h2', {}, '节目与知识库');
+  const listTitle = h('span', {}, '节目');
 
   const kbBox = h('div', { class: 'row' });
   const reindexAll = h('button', { type: 'button', class: 'small' }, '全部重建索引');
   const listEl = h('ol', { class: 'plist' });
-  const newBtn = h('button', { type: 'button', class: 'small primary' }, '+ 新建产品');
+  const newBtn = h('button', { type: 'button', class: 'small primary' }, '+ 新建条目');
+  const listHint = h('p', { class: 'hint' }, '拖动调整轮播顺序；开关 = 是否参与轮播。');
   const detail = h('div', { class: 'stack' });
   el.append(
-    h('div', { class: 'page-head' }, h('h2', {}, '产品与知识库'), kbBox, h('span', { class: 'grow' }), reindexAll),
+    h('div', { class: 'page-head' }, headTitle, kbBox, h('span', { class: 'grow' }), reindexAll),
     h('div', { class: 'products-layout' },
-      card(cardHead('产品', newBtn), h('p', { class: 'hint' }, '拖动调整轮播顺序；开关 = 是否参与讲品轮播。'), listEl),
+      card(cardHead(listTitle, newBtn), listHint, listEl),
       detail));
 
   // ---------------------------------------------------------------- 知识库概况
@@ -60,6 +65,12 @@ export async function mount(el, app) {
     const r = await app.api.get('/api/products');
     products = r.items;
     activeId = r.active_id;
+    program = r.program || {};
+    const label = itemLabel();
+    headTitle.textContent = `${label}与知识库`;
+    listTitle.textContent = label;
+    newBtn.textContent = `+ 新建${label}`;
+    listHint.textContent = `拖动调整轮播顺序；开关 = 是否参与${label}轮播。`;
     if (selected && selected !== GLOBAL && !products.some((p) => p.id === selected)) selected = null;
     if (!selected) selected = products[0]?.id || GLOBAL;
     renderList();
@@ -106,10 +117,10 @@ export async function mount(el, app) {
     });
     const g = h('li', { class: `pitem global ${selected === GLOBAL ? 'active' : ''}` },
       h('span', { class: 'grip' }, '📁'), h('div', { class: 'grow' }, h('div', { class: 'pname' }, '公共资料'),
-        h('div', { class: 'hint' }, '不属于任何产品，如店铺售后、发货政策（所有产品都能检索到）')));
+        h('div', { class: 'hint' }, `属于当前人设、不挂到具体${itemLabel()}的资料（所有${itemLabel()}都能检索到）`)));
     g.onclick = () => select(GLOBAL);
     listEl.replaceChildren(...items, g);
-    if (!products.length) listEl.prepend(h('li', { class: 'muted pempty' }, '还没有产品：点「新建产品」'));
+    if (!products.length) listEl.prepend(h('li', { class: 'muted pempty' }, `还没有${itemLabel()}：点「新建${itemLabel()}」`));
   }
   async function select(id) {
     if (id === selected) return;
@@ -120,12 +131,12 @@ export async function mount(el, app) {
     renderDetail();
   }
   newBtn.onclick = () => busy(newBtn, async () => {
-    const p = await app.api.post('/api/products', { name: `新产品 ${products.length + 1}` });
+    const p = await app.api.post('/api/products', { name: `新${itemLabel()} ${products.length + 1}` });
     await refreshList();
     scriptDirty = false;
     selected = null;
     await select(p.id);
-    toast('已新建，先在「基本信息」改名称和价格', 'ok');
+    toast('已新建，先在「基本信息」改名称', 'ok');
   });
 
   // ---------------------------------------------------------------- 详情
@@ -136,7 +147,7 @@ export async function mount(el, app) {
     scriptDirty = false;
     if (selected === GLOBAL) {
       const pane = h('div');
-      detail.replaceChildren(card(cardHead('公共资料'), h('p', { class: 'hint' }, '这里的文档对每个产品的提问都会参与检索。'), pane));
+      detail.replaceChildren(card(cardHead('公共资料'), h('p', { class: 'hint' }, `这里的文档属于当前人设，对每个${itemLabel()}的提问都会参与检索。`), pane));
       const t = tabs([{ id: 'docs', label: '资料' }, { id: 'test', label: '测试' }], store(TAB_KEY) === 'test' ? 'test' : 'docs', (id) => {
         store(TAB_KEY, id);
         pane.replaceChildren();
@@ -147,7 +158,7 @@ export async function mount(el, app) {
     }
     const p = products.find((x) => x.id === selected);
     if (!p) {
-      detail.replaceChildren(empty('选择左边的产品', '或者先新建一个产品，再上传它的资料（html / pdf / md）、生成讲解稿。'));
+      detail.replaceChildren(empty(`选择左边的${itemLabel()}`, `或者先新建一个${itemLabel()}，再上传它的资料（html / pdf / md）、生成讲解稿。`));
       return;
     }
     const activateBtn = h('button', { type: 'button', class: p.id === activeId ? 'small' : 'small primary' }, p.id === activeId ? '讲解中' : '设为当前讲解');
@@ -162,7 +173,7 @@ export async function mount(el, app) {
       renderDetail();
     });
     delBtn.onclick = async () => {
-      if (!(await confirmDialog(`删除产品「${p.name}」？它的讲解稿和 ${p.docs} 份资料会一起删除，不能恢复。`, { okText: '删除', danger: true }))) return;
+      if (!(await confirmDialog(`删除${itemLabel()}「${p.name}」？它的讲解稿和 ${p.docs} 份资料会一起删除，不能恢复。`, { okText: '删除', danger: true }))) return;
       await busy(delBtn, () => app.api.del(`/api/products/${p.id}`));
       selected = null;
       await refreshList();
@@ -204,8 +215,10 @@ export async function mount(el, app) {
     const notes = h('textarea', { rows: 2, value: p.notes || '', placeholder: '备注（只给自己看，不会说出来）' });
     const save = h('button', { type: 'button', class: 'primary' }, '保存');
     const row = (label, ctrl, help = '') => h('div', { class: 'field' }, h('div', { class: 'f-label' }, label), h('div', { class: 'f-ctrl' }, ctrl, help ? h('div', { class: 'hint' }, help) : ''));
-    pane.append(row('名称', name), row('价格 / 机制', price, '讲解稿与话术里的 {price}；只写资料里有的、能核实的价格'),
-      row('卖点', points, '生成讲解稿时会用到'), row('讲解时长（秒）', dur, '轮播时这个产品讲多久再换下一个'), row('备注', notes),
+    pane.append(row('名称', name),
+      program.show_price ? row('价格 / 机制', price, '讲解稿与话术里的 {price}；只写资料里有的、能核实的价格') : '',
+      row(program.show_price ? '卖点' : '要点', points, '生成讲解稿时会用到'),
+      row('讲解时长（秒）', dur, `轮播时这个${itemLabel()}讲多久再换下一个`), row('备注', notes),
       h('div', { class: 'row' }, h('span', { class: 'grow' }), save));
     save.onclick = () => busy(save, async () => {
       await app.api.put(`/api/products/${pid}`, { name: name.value, price_text: price.value, selling_points: points.value,
@@ -233,7 +246,7 @@ export async function mount(el, app) {
       saveBtn.disabled = !v;
     };
     pane.append(
-      h('p', { class: 'hint' }, '没有弹幕时数字人按顺序逐段讲；有高优先级互动先回应，再从被打断的那段接着讲。可用占位符 {product}（产品名）、{price}（价格）、{anchor}（主播自称）。',
+      h('p', { class: 'hint' }, `没有弹幕时数字人按顺序逐段讲；有高优先级互动先回应，再从被打断的那段接着讲。可用占位符 {product}（${itemLabel()}名）、{price}（价格）、{anchor}（主播自称）。`,
         '生成的段落标「待确认」，勾选确认后才参与轮播（广告法要求人工把关）。'),
       h('div', { class: 'row' }, genN, genBtn, allBtn, addBtn, h('span', { class: 'grow' }), dirtyHint, saveBtn), listBox);
     function render() {
@@ -277,7 +290,7 @@ export async function mount(el, app) {
             h('span', { class: 'grow' }), count, up, down, del),
           ta);
       }));
-      if (!segs.length) listBox.append(empty('还没有讲解稿', '先在「资料」页上传这个产品的资料，再点「用知识库生成」；也可以「添加一段」手写。'));
+      if (!segs.length) listBox.append(empty('还没有讲解稿', `先在「资料」页上传这个${itemLabel()}的资料，再点「用知识库生成」；也可以「添加一段」手写。`));
     }
     render();
     setDirty(false);
@@ -405,8 +418,8 @@ export async function mount(el, app) {
         v.cover_url ? h('img', { src: v.cover_url, alt: '', style: { width: '64px', height: '36px', objectFit: 'cover', borderRadius: '4px' } }) : '',
         h('span', {}, v.name), h('span', { class: 'hint' }, ` ${Math.round(v.duration_s || 0)}s · ${v.has_audio ? '有声' : '无声'}`)), play);
     });
-    pane.append(h('p', { class: 'hint' }, '勾选这个产品的视频（从「视频素材」页上传）。讲品时按「直播间设置 → 知识库与讲品 → 讲品中自动插播视频」自动插播，多个视频轮流播；',
-      '带原声播放时暂停讲品，播完接着讲。'),
+    pane.append(h('p', { class: 'hint' }, `勾选这个${itemLabel()}的视频（从「视频素材」页上传，视频库各人设共用）。轮播时按「直播间设置 → 知识库与讲品 → 讲品中自动插播视频」自动插播，多个视频轮流播；`,
+      '带原声播放时暂停讲解，播完接着讲。'),
     ...(rows.length ? rows : [empty('素材库里还没有视频', '先到「视频素材」页上传')]),
     rows.length ? h('div', { class: 'row' }, h('span', { class: 'grow' }), save) : '');
     save.onclick = () => busy(save, async () => {
@@ -427,7 +440,7 @@ export async function mount(el, app) {
     const nick = h('input', { type: 'text', placeholder: '提问观众昵称（可空）', style: { maxWidth: '180px' } });
     const gender = h('select', {}, new Option('性别未知', 'unknown'), new Option('男', 'male'), new Option('女', 'female'));
     const out = h('div', { class: 'stack' });
-    pane.append(h('p', { class: 'hint' }, pid ? '在这个产品的资料 + 公共资料里检索；回答测试走和直播完全一样的路径（检索 → LLM 或资料原句 → 合规过滤）。'
+    pane.append(h('p', { class: 'hint' }, pid ? `在这个${itemLabel()}的资料 + 公共资料里检索；回答测试走和直播完全一样的路径（检索 → LLM 或资料原句 → 合规过滤）。`
       : '在公共资料里检索。'),
     h('div', { class: 'row' }, q, searchBtn), h('div', { class: 'row' }, nick, gender, h('label', { class: 'inline' }, speak, '让数字人说'),
       h('span', { class: 'grow' }), answerBtn), out);
@@ -460,6 +473,11 @@ export async function mount(el, app) {
 
   // ---------------------------------------------------------------- 实时刷新
   on(app.events, 'topic:kb.ingest', () => refreshKb());
+  on(app.events, 'topic:persona.changed', async () => {
+    selected = null;
+    await Promise.all([refreshKb(), refreshList()]);
+    renderDetail();
+  });
   on(app.events, 'topic:products.changed', async (ev) => {
     const d = ev.detail.data || {};
     await refreshList();

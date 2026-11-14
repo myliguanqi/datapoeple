@@ -46,15 +46,23 @@ def test_product_question_flow_and_memory(make_client):
     assert c.get(f"/api/viewers/{uid}").status_code == 404
 
 
+def editable_persona(c):
+    """出厂模板只读：复制一份并激活，触发器才能改。"""
+    pid = c.post("/api/personas/commerce/duplicate", json={"name": "测试人设"}).json()["id"]
+    assert c.post(f"/api/personas/{pid}/activate").status_code == 200
+    return pid
+
+
 def test_trigger_table_edit_and_reset(make_client):
     c, ctx = make_client()
+    editable_persona(c)
     trs = c.get("/api/interaction/triggers").json()
     names = [t["name"] for t in trs]
     assert {"gift_l", "product_question", "welcome_member", "idle"} <= set(names)
     assert names == [t["name"] for t in sorted(trs, key=lambda t: -t["priority"])]
     r = c.put("/api/interaction/triggers/follow", json={"priority": 66, "lines": ["多谢{follow_user}关注！"]})
     assert r.status_code == 200 and r.json()["priority"] == 66 and r.json()["overridden"] == ["lines", "priority"]
-    assert ctx.cfg["interaction"]["triggers"]["follow"]["priority"] == 66            # 写进设置（持久化、可回滚）
+    assert ctx.cfg["persona"]["triggers"]["follow"]["priority"] == 66               # 写进当前人设模板
     sim(c, type="follow", nickname="小美", gender="female")
     assert wait_for(lambda: any(x["event"] == "follow" for x in c.get("/api/interaction/log").json()))
     e = next(x for x in c.get("/api/interaction/log").json() if x["event"] == "follow")
@@ -67,6 +75,7 @@ def test_trigger_table_edit_and_reset(make_client):
 
 def test_disable_trigger_via_api(make_client):
     c, ctx = make_client()
+    editable_persona(c)
     c.put("/api/interaction/triggers/gift_s", json={"enabled": False})
     sim(c, type="gift", nickname="小王", gift_name="玫瑰", unit_diamonds=1, count=1)
     time.sleep(0.3)

@@ -5,9 +5,10 @@
 # 主持人再用模板（lines）或 LLM（use_llm: true）把它说成口语；LLM 慢了/挂了一律用 lines 兜底，绝不冷场。
 #
 # 每条字段：
-#   when          命中信号（见 live/interaction/director.py 的 SIGNALS；always = 恒真兜底）
+#   when          命中信号（平台信号见 live/interaction/signals.py 的 PLATFORM_SIGNALS；
+#                 也可以写本模板 intents[] 里的意图名；always = 恒真兜底）
 #   priority      优先级（高→低）；≥ interaction.urgent_priority 的不受发声间隔限制；
-#                 ≥ host.interrupt_priority 的会打断正在讲的讲品段
+#                 ≥ host.interrupt_priority 的会打断正在讲的讲解段
 #   emotion       中间情绪标签（引擎支持时影响语气）
 #   target_energy 命中时把能量顶到多高（能量高 → 语速快、发声间隔短）
 #   cooldown_s    同一触发器最短间隔
@@ -17,8 +18,8 @@
 #   directive     给 LLM 的指令
 #   lines         兜底话术（随机挑一条，避开最近说过的）；{占位符} 见 director._fmt
 #
-# Web「弹幕互动 → 触发器」可以改开关/优先级/冷却/话术（写进设置 interaction.triggers，热更新），
-# 这里是出厂默认值。所有话术都要过合规过滤（compliance.*），这里本身也不写极限词。
+# Web「人设 → 触发器」可以改开关/优先级/冷却/话术（写进当前人设模板，热更新；出厂模板只读，先复制）。
+# 所有话术都要过合规过滤（compliance.*），这里本身也不写极限词。字段说明见 docs/live/PERSONAS.md。
 # ============================================================
 
 gift_l:

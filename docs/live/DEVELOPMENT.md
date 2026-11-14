@@ -7,17 +7,17 @@
 | 新增/修改配置项 | `live/settings/schema.py`（加一行 `F(key, type, default, label, help, group=, apply=hot\|restart, min/max/choices)`，`DEFAULTS` 与 Web 设置表单都由它生成），再在 `live/configs/*.yaml` 覆盖 |
 | 设置的合并 / 校验 / 持久化 / 回滚 | `live/settings/store.py`（SettingsCenter）；`.env` 密钥 `live/settings/env.py` |
 | 服务的构造与注入 | `live/app_context.py`（AppContext）|
-| HTTP / WebSocket 接口 | `live/api/*.py`（按功能分文件：system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、media、console_ws），`live/server.py` 只是 app 工厂 + 写操作鉴权中间件 |
+| HTTP / WebSocket 接口 | `live/api/*.py`（按功能分文件：system、sessions、offline、settings、danmaku、interaction、personas、host、knowledge、products、media、console_ws），`live/server.py` 只是 app 工厂 + 写操作鉴权中间件 |
 | 事件总线 / 统一事件模型 / 注册表 / 可注入时钟 | `live/core/bus.py`、`events.py`、`registry.py`、`clock.py` |
 | 控制台推送（/ws/console）与节流 | `live/feed.py` |
 | 弹幕接入 | `live/danmaku/`：`base.py` 接口与注册、`manager.py` 子进程管理、`process.py` 子进程入口、`mock.py`、`replay.py`、`recorder.py`、`cookie.py`；抖音 `douyin/parse.py`（纯函数 + 连击聚合）、`douyin/adapter.py`（接管 vendor fetcher）|
 | 抖音 fetcher（第三方，原样复制，**不改**） | `vendor/douyin_fetcher/`；抖音改签名连不上时用上游 DouyinLiveWebFetcher 同名文件整体覆盖 |
-| 互动规则（触发器表、话术、人设） | `live/interaction/policies/commerce.yaml`、`persona_commerce.md`（出厂值；Web 上改的写进设置覆盖） |
-| 导演 / 局面 / 长期记忆 / 队列 / 意图 / 合规 | `live/interaction/director.py`、`state.py`、`memory.py`、`queue.py`、`intent.py`、`compliance.py`；`engine.py` 串起来 |
+| 人设模板（提示词、触发器、话术、意图、称呼、节目单叫法） | `live/personas/`：`builtin/<id>/`（出厂模板）、`models.py`（字段/校验）、`store.py`（读写）、`service.py`（当前人设/切换/编辑）、`migrate.py`（旧数据迁移）；三种出厂模板 `commerce` / `explainer` / `entertainment`。说明见 [PERSONAS.md](PERSONAS.md) |
+| 导演 / 局面 / 长期记忆 / 队列 / 意图 / 合规 | `live/interaction/director.py`、`state.py`、`memory.py`、`queue.py`、`intent.py`、`compliance.py`、`signals.py`（平台信号/触发器字段）；`engine.py` 串起来 |
 | 主持人（谁先说、写词、打断讲品、人工插话） | `live/host/host.py`、`composer.py`、`session_tap.py` |
 | 知识库（解析、切块、检索、资料够不够、摘句） | `live/knowledge/`：`loaders/`（md/html/pdf）、`chunker.py`、`text.py`（分词、查询构造、覆盖度、摘句）、`index/`（fts / bm25 / embedding + hybrid）、`store.py`（kb.sqlite）、`service.py`（KnowledgeBase：入库、检索、retrieve 钩子、回答测试）；注册表在 `__init__.py` |
-| 视频素材、直播场景（布局、产品卡片、视频播放、讲品让路） | `live/media/store.py`（MediaStore：ffprobe、封面、media.json）、`live/media/scene.py`（SceneManager）；场景页 `web/scene.html` + `web/scene.js` |
-| 产品库、讲品轮播、讲解稿生成 | `live/products/`：`models.py`、`store.py`（products.json）、`script.py`（ProductScript）、`generator.py`；提示词 `live/interaction/policies/rag_prompt.md`、`script_prompt.md`（出厂值，Web 上改 `persona.rag_prompt` / `persona.script_prompt`） |
+| 视频素材、直播场景（布局、条目卡片、视频播放、讲解让路） | `live/media/store.py`（MediaStore：ffprobe、封面、media.json，素材各人设共用）、`live/media/scene.py`（SceneManager，按 `persona.program.card` 显示 product/title/off 卡片）；场景页 `web/scene.html` + `web/scene.js` |
+| 节目单、轮播、讲解稿生成 | `live/products/`：`models.py`、`store.py`（每人设 `programs/<id>.json`）、`script.py`（ProductScript，切换人设时 `switch_path` + `reset`）、`generator.py`；提示词在各自人设模板的 `rag_prompt.md` / `script_prompt.md` |
 | 直播调度、空闲/说话、打断、追加式请求、事件 | `live/session.py` |
 | 空闲音频策略 | `live/idle.py` |
 | TTS | `live/tts/`：引擎（edge / http / mock / volc 火山）在 `__init__.py` 的 `TTS_ENGINES` 注册；`service.py` 回退链 + 每日上限 + 热切换；`cache.py` 合成缓存 |
@@ -42,6 +42,7 @@
 
 ```bat
 :: 0) 单元 / 集成测试（pytest，不起服务、不起 worker 进程、不调用任何计费接口）
+::    210 项，含人设模板（test_p9_personas.py：切换/复制/编辑/意图/触发器/节目单与知识库隔离/旧数据迁移）
 python -m pytest tests/live -q -m "not e2e"
 
 :: 1) 端到端（mock，不需要模型/显卡）：先起服务，再跑测试
@@ -54,6 +55,8 @@ python tests/live/test_e2e_commerce.py      :: 16 项
 python tests/live/test_e2e_products.py      :: 15 项
 :: 1d) 视频素材 + 直播场景（同样先起 mock 服务，需要 ffmpeg）：上传 → 画中画原声播放（讲品让路）→ 场景页回传播完 → 续讲 → 静音全屏按时长结束
 python tests/live/test_e2e_scene.py         :: 15 项
+:: 1e) 人设切换（同样先起 mock 服务；建议最后跑，跑完会恢复原人设和会话）：复制娱乐人设 → 切换 → 意图命中 / 无带货残留 → 切回并删除
+python tests/live/test_e2e_personas.py      :: 10 项
 
 :: 2) 真实推理后端的逻辑测试（需要 torch+CUDA+官方依赖，不需要权重）
 python tests/live/test_runner_logic.py      :: 18 项
@@ -74,7 +77,7 @@ pytest 测试放 `tests/live/test_*.py`；夹具在 `tests/live/conftest.py`（`
 场景页的人工检查：Edge 无头 + `--remote-debugging-port`，打开 `/scene?session=default&debug=1`（`window.__scene` 暴露当前快照和播放器），
 调 `POST /api/sessions/default/scene/video` 切不同 mode 后截图。
 
-e2e 脚本**按 1 → 1b → 1c → 1d 的顺序跑**（或两次之间隔 2 分钟以上）：模拟注入事件后 2 分钟内导演仍认为"在播"，
+e2e 脚本**按 1 → 1b → 1c → 1d → 1e 的顺序跑**（或两次之间隔 2 分钟以上）：模拟注入事件后 2 分钟内导演仍认为"在播"，
 会出冷场话术和送礼回踩，紧接着跑 `test_e2e_mock.py` 会让"空闲帧不带说话标记"一项失败。各 e2e 脚本跑完会删掉自己建的产品/资料/测试观众，
 并把改过的设置恢复原样（原来没被 Web 覆盖的键用 reset 去掉覆盖）。
 另外注意：Web 上「连接」弹幕会把 `danmaku.enabled=true`（和来源）写进 `live_data/settings.json`，服务重启后会自动连上——跑 e2e 之前确认
@@ -106,29 +109,34 @@ lite→pro 切换的运动帧接续、换形象、卸载保护。它**不能**�
      `self.settings.register(obj, ["前缀"])`。`changed` 只含该前缀下真正变化的 hot 键。
 3. Web 设置页自动出现这一项（标签、说明、范围、即时生效/需重启徽章都来自 schema），不用改前端。
 
-## 扩展：调互动策略 / 新增触发器
+## 扩展：调互动策略 / 新增触发器 / 新人设
 
 大多数调整不用写代码：
-- 改优先级、冷却、话术、是否用 LLM：Web「弹幕互动 → 触发器」，或在 `policies/commerce.yaml` 改出厂值；
-- 改阈值（礼物分档、欢迎分级、点赞门槛、人数猛涨……）：Web「直播间设置 → 互动策略」；
-- 改关键词（产品提问、购买意向、垃圾弹幕）：同上 `interaction.intent.*`；改违禁词：「合规词库」。
+- 换人或换风格：Web「人设」页切换 / 复制 / 编辑（提示词、意图、触发器、称呼、字数、节目单叫法）；
+- 改优先级、冷却、话术、是否用 LLM：Web「人设 → 触发器」（当前人设；出厂模板先复制）或直接改该模板的 `triggers.yaml`；
+- 改阈值（礼物分档、欢迎分级、点赞门槛、人数猛涨……）：Web「直播间设置 → 互动策略」（阈值是全局的，不属于某个人设）；
+- 改关键词 / 垃圾弹幕：Web「人设 → 弹幕意图」；改违禁词：「合规词库」（全局）。
+- 新增一个完整出厂人设：建 `live/personas/builtin/<id>/`（persona.yaml + 三个 md + triggers.yaml），加入 `store.BUILTIN_ORDER`；
+  字段与校验见 [PERSONAS.md](PERSONAS.md)。
 
-新增一个触发器（基于已有信号），在 `commerce.yaml` 加一段即可：
+在现有模板里新增一个触发器（基于已有信号或本人设意图），在 `triggers.yaml` 加一段即可：
 
 ```yaml
 gift_milestone_thanks:
-  when: gift_l                 # 已有信号，见 director.SIGNALS
+  when: gift_l                 # 平台信号见 live/interaction/signals.py；也可以写本人设某个意图名
   priority: 64
   emotion: 感激高能
   cooldown_s: 120
   use_llm: false
   directive: "……给 LLM 的指令……"
   lines:
-    - "感谢{gift_user}的{gift_count}个{gift_name}！"     # 占位符见 Director._fmt
+    - "感谢{gift_user}的{gift_count}个{gift_name}！"     # 占位符见 Director._fmt / PERSONAS.md
 ```
 
-新增一个**信号**：在 `RoomState`（需要新的事件窗口时）和 `Director._derive()` 里算出一个布尔值放进返回的 dict，名字加进
-`director.SIGNALS`；如果它消费某类当事事件（防重复念），在 `_CONSUMES` 里登记。用假时钟写测试，照 `tests/live/test_p4_director.py`。
+新增一个**平台信号**：在 `RoomState`（需要新的事件窗口时）和 `Director._derive()` 里算出一个布尔值放进返回的 dict，名字加进
+`live/interaction/signals.py` 的 `PLATFORM_SIGNALS`；如果它消费某类当事事件（防重复念），在 `_CONSUMES` 里登记。
+人设自己的意图信号不用改代码——在 `persona.yaml` 的 `intents[]` 里加一项，触发器 `when` 写意图名即可。
+用假时钟写测试，照 `tests/live/test_p4_director.py` / `test_p9_personas.py`。
 
 ## 扩展：新增文档格式 / 检索后端
 
@@ -181,7 +189,7 @@ class MyVectorDB(Retriever):
 在 `live/knowledge/__init__.py` 用 `RETRIEVERS.register("myvdb", lambda store, **kw: MyVectorDB(store))` 注册，schema 的
 `knowledge.backend` choices 加 `"myvdb"`。"资料够不够"（覆盖度）、摘句、提示词组装都在 `KnowledgeBase` 里，与后端无关。
 调检索效果一般不用写代码：改 `knowledge.synonyms`（同义词）、`knowledge.min_coverage`（覆盖度门槛）、`knowledge.top_k`，
-在「产品与知识库 → 测试 → 检索测试」里看信息点、命中片段和覆盖度。
+在「节目与知识库 → 测试 → 检索测试」里看信息点、命中片段和覆盖度。
 
 ## 扩展：新增弹幕平台
 

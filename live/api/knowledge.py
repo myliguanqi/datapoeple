@@ -23,6 +23,7 @@ class ReindexBody(BaseModel):
 class AnswerBody(BaseModel):
     question: str
     product_id: str | None = None
+    intent: str | None = None            # 用哪个人设意图回答（默认第一个 qa != off 的意图）
     speak: bool = False
     interrupt: bool = False
     nickname: str | None = None          # 模拟提问观众（称呼按性别），可不填
@@ -130,7 +131,7 @@ async def answer(request: Request, body: AnswerBody):
     ctx = get_ctx(request)
     pid = _check_product(ctx, body.product_id) or None
     asker = {"nickname": body.nickname, "gender": body.gender or "unknown"} if body.nickname else None
-    r = await asyncio.to_thread(ctx.kb.answer, q, pid, asker)
+    r = await asyncio.to_thread(ctx.kb.answer, q, pid, asker, body.intent)
     if body.speak and r["text"]:
         cue = ctx.host.say(r["text"], interrupt=body.interrupt)
         r["cue_id"] = cue.id

@@ -216,8 +216,6 @@ function simTab(pane, app, refreshState) {
     ['普通进场', { type: 'member', nickname: '路过的小李', gender: 'male' }],
     ['高等级进场', { type: 'member', nickname: '钻石大哥', gender: 'male', wealth_level: 30, fans_level: 8 }],
     ['弹幕', { type: 'chat', nickname: '李姐', gender: 'female', wealth_level: 3, content: '主播今天好漂亮' }],
-    ['产品提问', { type: 'chat', nickname: '王阿姨', gender: 'female', wealth_level: 6 }],
-    ['购买意向', { type: 'chat', nickname: '小张', gender: 'male', content: '几号链接，我要了' }],
     ['小礼物', { type: 'gift', nickname: '李姐', gender: 'female', wealth_level: 3, gift_name: '玫瑰', unit_diamonds: 1, count: 3 }],
     ['大礼物', { type: 'gift', nickname: '钻石大哥', gender: 'male', wealth_level: 30, gift_name: '浪漫花束', unit_diamonds: 299, count: 1 }],
     ['关注', { type: 'follow', nickname: '新朋友', gender: 'female' }],
@@ -225,6 +223,15 @@ function simTab(pane, app, refreshState) {
     ['人数猛涨 +30', { type: 'room_stat', online_delta: 30 }],
     ['人数下滑 -10', { type: 'room_stat', online_delta: -10 }],
   ];
+  const intentRow = h('div', { class: 'row' });
+  app.api.get('/api/personas/active').then((p) => {
+    const intents = (p.intents || []).filter((it) => it.enabled !== false && (it.keywords || []).length);
+    intentRow.replaceChildren(...intents.map((it) => {
+      const b = h('button', { type: 'button', title: `命中意图 ${it.name}` }, it.label || it.name);
+      b.onclick = () => sim({ type: 'chat', nickname: '测试观众', gender: 'female', content: it.keywords[0] }, b);
+      return b;
+    }));
+  }).catch(() => {});
   const quickRow = h('div', { class: 'row' }, ...quick.map(([label, body]) => {
     const b = h('button', { type: 'button' }, label);
     b.onclick = () => sim(body, b);
@@ -279,6 +286,7 @@ function simTab(pane, app, refreshState) {
   pane.append(
     h('div', { class: 'stack' },
       h('div', {}, h('div', { class: 'hint' }, '快捷注入（不经过弹幕子进程，直接进入互动引擎）'), quickRow),
+      h('div', {}, h('div', { class: 'hint' }, '按当前人设的弹幕意图注入（取每个意图的第一个关键词）'), intentRow),
       h('div', {}, h('div', { class: 'hint' }, '自定义事件'),
         h('div', { class: 'row' }, f.type, f.nickname, f.gender, h('label', { class: 'inline' }, '💎', f.wealth), h('label', { class: 'inline' }, '🎫', f.fans)),
         h('div', { class: 'row' }, f.content, h('label', { class: 'inline' }, '礼物', f.gift), h('label', { class: 'inline' }, '单价', f.unit),

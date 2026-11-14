@@ -21,7 +21,8 @@ class Room:
         self.cfg = cfg
         cfg["interaction"]["memory"]["record_test_events"] = True   # 测试用的 mock 事件也要进长期记忆
         if not idle:                     # 冷场话术（always）会在推进时钟时插话、占用发声间隔；专门的用例再打开
-            cfg["interaction"]["triggers"] = {"idle": {"enabled": False}, "idle_interact": {"enabled": False}}
+            for name in ("idle", "idle_interact"):
+                cfg["persona"]["triggers"].setdefault(name, {})["enabled"] = False
         self.clock = clock or FakeClock(1_000_000.0)
         self.bus = EventBus()
         self.mem = memory or ViewerMemory(cfg, path=str(mem_path), clock=self.clock)
@@ -265,7 +266,9 @@ def test_non_urgent_waits_for_speak_interval(room):
 
 
 def test_trigger_override_disable_and_priority(room):
-    room.cfg["interaction"]["triggers"] = {"gift_s": {"enabled": False}, "follow": {"priority": 70, "lines": ["谢谢{follow_user}！"]}}
+    room.cfg["persona"]["triggers"]["gift_s"] = {**room.cfg["persona"]["triggers"]["gift_s"], "enabled": False}
+    room.cfg["persona"]["triggers"]["follow"] = {**room.cfg["persona"]["triggers"]["follow"], "priority": 70,
+                                                "lines": ["谢谢{follow_user}！"]}
     room.director.reload_triggers()
     room.gift("小王", "玫瑰", 1, 1)
     assert "gift_s" not in room.events()

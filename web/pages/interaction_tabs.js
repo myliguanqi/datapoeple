@@ -1,5 +1,5 @@
 // 弹幕互动页的三个标签：决策日志（事件 → 触发器 → 台词）、触发器表（行内编辑，热更新）、观众（长期记忆）。
-import { badge, busy, confirmDialog, fmtDateTime, fmtTime, h, table, toast } from '../ui.js';
+import { badge, busy, confirmDialog, fmtDateTime, fmtTime, h, promptDialog, table, toast } from '../ui.js';
 
 const STATUS = {
   queued: ['', '排队'], composing: ['warn', '写词中'], speaking: ['ok', '播报中'], spoken: ['ok', '已说'],
@@ -62,48 +62,94 @@ export function logTab(pane, app) {
 }
 
 // ---------------------------------------------------------------- 触发器表
-export function triggersTab(pane, app) {
+export function triggersTab(pane, app, { base = '/api/interaction/triggers', readOnly = false, addable = false } = {}) {
   const box = h('div');
+  const addBtn = h('button', { type: 'button', class: 'small primary' }, '+ 添加触发器');
+  let ro = readOnly;
   const reload = async () => {
-    const trs = await app.api.get('/api/interaction/triggers');
-    box.replaceChildren(h('div', { class: 'stack' }, ...trs.map((t) => triggerRow(t, app, reload))));
+    if (base === '/api/interaction/triggers') {           // 出厂模板只读：先复制再改
+      try {
+        const d = await app.api.get('/api/personas');
+        ro = !!d.active?.builtin;
+      } catch { /* 用传入的 readOnly */ }
+    }
+    const trs = await app.api.get(base);
+    box.replaceChildren(h('div', { class: 'stack' }, ...trs.map((t) => triggerRow(t, app, reload, base, ro))));
+    addBtn.hidden = !addable || ro;
   };
-  pane.append(h('p', { class: 'hint' }, '按优先级从高到低。改完点该行的「保存」立即生效（写入设置 interaction.triggers，可在设置页历史版本里回滚）。',
-    ' 优先级 ≥ 紧急优先级（默认 24）的不受发声间隔限制；≥ 打断讲品优先级（默认 50）的会打断讲品。话术里的 {占位符} 见文档。'), box);
+  addBtn.onclick = async () => {
+    const name = await promptDialog('添加触发器', { label: '触发器名（小写字母/数字/下划线，和意图名同名时由该意图触发）' });
+    if (!name || !name.trim()) return;
+    await busy(addBtn, async () => {
+      await app.api.post(base, { name: name.trim(), when: 'always', priority: 0, enabled: true, lines: [] });
+      toast('已添加触发器，请补 when 和话术', 'ok');
+      reload();
+    });
+  };
+  pane.append(h('p', { class: 'hint' }, '按优先级从高到低。改完点该行的「保存」立即生效（写进当前人设模板）。',
+    ' 优先级 ≥ 紧急优先级（默认 24）的不受发声间隔限制；≥ 打断讲品优先级（默认 50）的会打断讲品。话术里的 {占位符} 见 docs/live/PERSONAS.md。'
+    + (readOnly ? ' 出厂模板只读：先「复制为新模板」再改。' : '')), addBtn, box);
   reload();
   return null;
 }
 
-function triggerRow(t, app, reload) {
-  const en = h('input', { type: 'checkbox', checked: t.enabled });
-  const pri = h('input', { type: 'number', min: 0, max: 100, value: t.priority, style: { width: '5em' } });
-  const cd = h('input', { type: 'number', min: 0, step: 1, value: t.cooldown_s, style: { width: '5em' } });
-  const llm = h('input', { type: 'checkbox', checked: t.use_llm });
-  const lines = h('textarea', { rows: Math.min(5, Math.max(2, t.lines.length)), value: t.lines.join('\n') });
-  const directive = h('input', { type: 'text', value: t.directive || '', style: { width: '100%' } });
+function triggerRow(t, app, reload, base = '/api/interaction/triggers', readOnly = false) {
+  const en = h('input', { type: 'checkbox', checked: t.enabled, disabled: readOnly });
+  const when = h('input', { type: 'text', value: t.when || '', style: { width: '11em' }, disabled: readOnly,
+    title: '平台信号，或当前人设某个意图的英文名；always = 恒真兜底' });
+  const pri = h('input', { type: 'number', min: 0, max: 100, value: t.priority, style: { width: '5em' }, disabled: readOnly });
+  const cd = h('input', { type: 'number', min: 0, step: 1, value: t.cooldown_s, style: { width: '5em' }, disabled: readOnly });
+  const emo = h('input', { type: 'text', value: t.emotion || '', style: { width: '7em' }, disabled: readOnly });
+  const energy = h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: t.target_energy, style: { width: '5em' }, disabled: readOnly });
+  const stale = h('input', { type: 'number', min: 0, value: t.max_stale_s ?? '', placeholder: '默认', style: { width: '5em' }, disabled: readOnly });
+  const role = h('select', { disabled: readOnly }, new Option('（不合并）', ''), new Option('who 点名', 'who'), new Option('what 场面', 'what'));
+  role.value = t.role || '';
+  const mergeClause = h('input', { type: 'text', value: t.merge_clause || '', placeholder: '合并子句（可空）', style: { width: '14em' }, disabled: readOnly });
+  const mergeWith = h('input', { type: 'text', value: (t.merge_with || []).join('，'), placeholder: '可合并的触发器名', style: { width: '13em' }, disabled: readOnly });
+  const llm = h('input', { type: 'checkbox', checked: t.use_llm, disabled: readOnly });
+  const lines = h('textarea', { rows: Math.min(5, Math.max(2, t.lines.length)), value: t.lines.join('\n'), disabled: readOnly });
+  const directive = h('input', { type: 'text', value: t.directive || '', style: { width: '100%' }, disabled: readOnly });
   const save = h('button', { type: 'button', class: 'primary small' }, '保存');
   const reset = h('button', { type: 'button', class: 'small' }, '恢复默认');
+  const del = h('button', { type: 'button', class: 'small danger' }, '删除');
+  save.hidden = readOnly;
+  reset.hidden = readOnly;
+  del.hidden = readOnly;
   save.onclick = () => busy(save, async () => {
-    await app.api.put(`/api/interaction/triggers/${t.name}`, {
-      enabled: en.checked, priority: +pri.value, cooldown_s: +cd.value, use_llm: llm.checked, directive: directive.value,
-      lines: lines.value.split('\n').map((x) => x.trim()).filter(Boolean),
+    await app.api.put(`${base}/${t.name}`, {
+      enabled: en.checked, when: when.value.trim(), priority: +pri.value, cooldown_s: +cd.value, emotion: emo.value,
+      target_energy: +energy.value, max_stale_s: stale.value === '' ? null : +stale.value, use_llm: llm.checked,
+      role: role.value || '', merge_clause: mergeClause.value || null,
+      merge_with: mergeWith.value.split(/[，,]/).map((x) => x.trim()).filter(Boolean),
+      directive: directive.value, lines: lines.value.split('\n').map((x) => x.trim()).filter(Boolean),
     });
     toast(`触发器 ${t.name} 已保存，立即生效`, 'ok');
     reload();
   });
   reset.onclick = async () => {
-    if (!(await confirmDialog(`把触发器 ${t.name} 恢复成出厂设置？`, { okText: '恢复默认' }))) return;
-    await busy(reset, () => app.api.post(`/api/interaction/triggers/${t.name}/reset`));
+    if (!(await confirmDialog(`把触发器 ${t.name} 恢复成复制来源（出厂模板）里的值？`, { okText: '恢复默认' }))) return;
+    await busy(reset, () => app.api.post(`${base}/${t.name}/reset`));
+    reload();
+  };
+  del.onclick = async () => {
+    if (!(await confirmDialog(`删除触发器 ${t.name}？`, { okText: '删除', danger: true }))) return;
+    await busy(del, () => app.api.del(`${base}/${t.name}`));
     reload();
   };
   return h('div', { class: 'card', style: { padding: '8px 12px' } },
     h('div', { class: 'row' },
-      h('label', { class: 'switch', title: '启用' }, en, h('span')), h('b', {}, t.name), h('code', { class: 'muted' }, `when: ${t.when}`),
+      h('label', { class: 'switch', title: '启用' }, en, h('span')), h('b', {}, t.name),
+      h('label', { class: 'inline' }, 'when', when),
       (t.overridden || []).length ? badge(`已改：${t.overridden.join('、')}`, 'accent') : '',
       t.last_fired ? h('span', { class: 'hint' }, `上次触发 ${fmtTime(t.last_fired)}`) : '',
       h('span', { class: 'grow' }),
-      h('label', { class: 'inline' }, '优先级', pri), h('label', { class: 'inline' }, '冷却(秒)', cd),
-      h('label', { class: 'inline' }, h('span', { class: 'switch' }, llm, h('span')), 'LLM 写词'), save, reset),
+      h('label', { class: 'inline' }, '优先级', pri), h('label', { class: 'inline' }, '冷却(秒)', cd), del, save, reset),
+    h('div', { class: 'row' },
+      h('label', { class: 'inline' }, '情绪', emo), h('label', { class: 'inline' }, '能量', energy),
+      h('label', { class: 'inline' }, '保鲜(秒)', stale),
+      h('label', { class: 'inline' }, '合并角色', role), h('label', { class: 'inline' }, '合并子句', mergeClause),
+      h('label', { class: 'inline' }, '合并对象', mergeWith),
+      h('label', { class: 'inline' }, h('span', { class: 'switch' }, llm, h('span')), 'LLM 写词')),
     h('div', { class: 'row' }, h('span', { class: 'hint' }, '指令（给 LLM）'), directive),
     h('div', { class: 'row' }, h('div', { class: 'stack', style: { flex: 1, gap: '2px' } }, h('span', { class: 'hint' }, '兜底话术（一行一条，随机挑）'), lines)));
 }

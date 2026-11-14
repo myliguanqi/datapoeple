@@ -1,4 +1,4 @@
-"""知识库存储：live_data/kb/kb.sqlite（docs 文档元数据、chunks 切块）+ live_data/kb/files/（原始文件，文件名是随机 ID）。
+"""知识库存储：每个「人设」一个 live_data/kb/<人设 id>/，里面 kb.sqlite（docs 元数据、chunks 切块）+ files/（原始文件，文件名是随机 ID）。
 
 检索索引（FTS5 表、向量表）由 index/ 下的后端自己维护，可随时从 chunks 重建。线程安全（一把锁 + check_same_thread=False）。
 """

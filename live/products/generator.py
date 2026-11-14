@@ -6,6 +6,7 @@ LLM 不可用 / 失败 / 返回格式不对时，用模板从产品信息和资�
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from loguru import logger
@@ -59,7 +60,9 @@ class ScriptGenerator:
 
     def messages(self, product, chunks: list, n: int) -> list:
         ctx = self.kb.context_text(chunks) if (self.kb and chunks) else ""
-        payload = {"product": {"name": product.name, "price_text": product.price_text, "selling_points": product.selling_points},
+        prog = (self.cfg.get("persona") or {}).get("program") or {}
+        item = {"name": product.name, "price_text": product.price_text, "selling_points": product.selling_points}
+        payload = {"item": item, "item_label": prog.get("item_label") or "节目", "product": item,
                    "资料": ctx, "segments": n}
         return [{"role": "system", "content": self.system_prompt()},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
@@ -94,12 +97,17 @@ class ScriptGenerator:
                 "ms": round((time.perf_counter() - t0) * 1000)}
 
     def template(self, product, chunks: list, n: int) -> list:
-        name = "{product}"
+        name = product.name
+        persona = self.cfg.get("persona") or {}
+        prog = persona.get("program") or {}
+        label = prog.get("item_label") or "节目"
+        anchor = persona.get("anchor_name") or "主播"
+        shop = persona.get("shop_name") or ""
         segs = []
-        intro = f"家人们，接下来给大家介绍今天的{name}。"
+        intro = f"接下来给大家介绍{label}「{name}」。"
         if product.selling_points:
             intro += "，".join(product.selling_points[:2]).rstrip("。") + "。"
-        if product.price_text:
+        if prog.get("show_price", True) and product.price_text:
             intro += f"价格方面，{product.price_text.rstrip('。')}。"
         segs.append(intro)
         for c in chunks:
@@ -122,5 +130,10 @@ class ScriptGenerator:
             if len(segs) >= n - 1:
                 break
             segs.append(f"再说一个亮点，{pt.rstrip('。')}。")
-        segs.append(f"喜欢{name}的家人们，点开下方小黄车就能找到，有任何问题随时在弹幕里问{self.cfg['persona'].get('anchor_name') or '主播'}！")
+        closing = str(prog.get("closing_line") or "").strip()
+        if closing:
+            vals = {"product": name, "item": name, "price": product.price_text or "", "anchor": anchor, "shop": shop}
+            closing = re.sub(r"\{(product|item|price|anchor|shop)\}", lambda m: vals[m.group(1)], closing).strip()
+            if closing:
+                segs.append(closing)
         return segs

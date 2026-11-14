@@ -79,7 +79,10 @@ class SceneManager:
         with self._lock:
             v = dict(st.video) if st.video else None
             prod = self.product_info() or None
-            card_on = bool(self.sc["card"]["enabled"]) and st.card_visible and prod is not None
+            prog = (self.cfg.get("persona") or {}).get("program") or {}
+            card_mode = prog.get("card") or "product"          # product | title | off
+            card_on = (bool(self.sc["card"]["enabled"]) and st.card_visible and prod is not None
+                       and card_mode != "off")
             layout = MODES[v["mode"]] if v else ("dh_with_card" if card_on else "dh_full")
             sub = self.sc["subtitle"]["enabled"] if st.subtitle is None else st.subtitle
             return {
@@ -87,10 +90,13 @@ class SceneManager:
                 "canvas": {"width": int(self.sc["width"]), "height": int(self.sc["height"]), "background": self._background(),
                            "dh_rect": dict(self.sc["dh_rect"]), "pip_rect": dict(self.sc["pip_rect"]),
                            "card_rect": dict(self.sc["card_rect"])},
-                "card": {"enabled": card_on, "style": self.sc["card"]["style"],
-                         "product": None if prod is None else {"id": prod.get("id"), "name": prod.get("name"),
-                                                               "price_text": prod.get("price_text") or "",
-                                                               "selling_points": list(prod.get("selling_points") or [])[:3]}},
+                "card": {"enabled": card_on, "style": self.sc["card"]["style"], "mode": card_mode,
+                         "label": prog.get("item_label") or "节目",
+                         "product": None if prod is None else {
+                             "id": prod.get("id"), "name": prod.get("name"),
+                             "price_text": (prod.get("price_text") or "") if prog.get("show_price", True) else "",
+                             "selling_points": (list(prod.get("selling_points") or [])[:3]
+                                                if card_mode == "product" else [])}},
                 "video": v, "subtitle": {"enabled": bool(sub)}, "ducking": float(self.sc["ducking"]),
                 "disclosure": (self.cfg["compliance"].get("ai_disclosure") or "").strip() or DEFAULT_DISCLOSURE,
                 "blocks_script": self._blocks(st), "ts": time.time(),

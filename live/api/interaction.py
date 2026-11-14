@@ -1,20 +1,26 @@
-"""互动接口：触发器表（查看 / 修改 / 恢复默认）、队列、决策日志、暂停/恢复互动；长期记忆里的观众（查、删）。"""
-from __future__ import annotations
+"""互动接口：触发器表（查看 / 修改 / 恢复默认）、队列、决策日志、暂停/恢复互动；长期记忆里的观众（查、删）。
 
-import copy
+触发器属于当前人设模板；这里的接口是「人设」页触发器编辑器的兼容入口，实际写进当前人设。
+出厂模板只读：先复制成用户模板再改（403 会给出提示）。
+"""
+from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from live.api.deps import get_ctx
 from live.interaction.director import build_triggers
+from live.personas.models import signals_of
+from live.personas.service import PersonaInvalid
 
 router = APIRouter()
-EDITABLE = ("enabled", "priority", "cooldown_s", "emotion", "target_energy", "directive", "lines", "max_stale_s", "use_llm")
+EDITABLE = ("enabled", "when", "priority", "cooldown_s", "emotion", "target_energy", "directive", "lines",
+            "max_stale_s", "use_llm", "role", "merge_clause", "merge_with")
 
 
 class TriggerPatch(BaseModel):
     enabled: bool | None = None
+    when: str | None = None
     priority: int | None = None
     cooldown_s: float | None = None
     emotion: str | None = None
@@ -23,23 +29,37 @@ class TriggerPatch(BaseModel):
     lines: list[str] | None = None
     max_stale_s: float | None = None
     use_llm: bool | None = None
+    role: str | None = None
+    merge_clause: str | None = None
+    merge_with: list[str] | None = None
 
 
-def _save_overrides(ctx, overrides: dict) -> None:
-    r = ctx.settings.update({"interaction.triggers": overrides})
-    if not r["ok"]:
-        raise HTTPException(400, "；".join(f"{k} {v}" for k, v in r["errors"].items()))
-    ctx.engine.director.reload_triggers()          # 立即生效（不用等总线回调）
+def _trigger_payload(ctx, name: str) -> dict:
+    t = ctx.engine.director.trigger(name)
+    if t is None:
+        raise HTTPException(404, f"没有触发器 {name}")
+    p = ctx.persona.active()
+    src = ctx.persona.source_of(p) or p
+    base = {x.name: x.describe() for x in build_triggers(src.get("triggers") or {}, None, signals_of(src))}
+    d = t.describe()
+    d["default"] = {k: base.get(name, {}).get(k) for k in EDITABLE}
+    d["overridden"] = list((ctx.persona.trigger_diff(p) or {}).get(name) or [])
+    d["last_fired"] = ctx.engine.director.last_fired.get(name)
+    return d
 
 
 @router.get("/api/interaction/triggers")
 async def triggers(request: Request):
     ctx = get_ctx(request)
-    base = {t.name: t.describe() for t in build_triggers(ctx.engine.director.base_policy, {})}
+    p = ctx.persona.active()
+    src = ctx.persona.source_of(p) or p
+    base = {t.name: t.describe() for t in build_triggers(src.get("triggers") or {}, None, signals_of(src))}
+    diff = ctx.persona.trigger_diff(p)
     out = []
     for t in ctx.engine.director.triggers:
         d = t.describe()
         d["default"] = {k: base.get(t.name, {}).get(k) for k in EDITABLE}
+        d["overridden"] = list(diff.get(t.name) or [])
         d["last_fired"] = ctx.engine.director.last_fired.get(t.name)
         out.append(d)
     return out
@@ -57,18 +77,24 @@ async def patch_trigger(request: Request, name: str, body: TriggerPatch):
         raise HTTPException(400, "cooldown_s 不能为负")
     if "lines" in patch:
         patch["lines"] = [x.strip() for x in patch["lines"] if x and x.strip()]
-    over = copy.deepcopy(ctx.cfg["interaction"].get("triggers") or {})
-    over.setdefault(name, {}).update(patch)
-    _save_overrides(ctx, over)
-    return ctx.engine.director.trigger(name).describe()
+    try:
+        ctx.persona.update_trigger(ctx.persona.active_id, name, patch)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except PersonaInvalid as e:
+        raise HTTPException(400, str(e))
+    return _trigger_payload(ctx, name)
 
 
 @router.post("/api/interaction/triggers/{name}/reset")
 async def reset_trigger(request: Request, name: str):
     ctx = get_ctx(request)
-    over = copy.deepcopy(ctx.cfg["interaction"].get("triggers") or {})
-    over.pop(name, None)
-    _save_overrides(ctx, over)
+    try:
+        ctx.persona.reset_trigger(ctx.persona.active_id, name)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except KeyError:
+        raise HTTPException(404, f"复制来源里没有触发器 {name}")
     t = ctx.engine.director.trigger(name)
     return t.describe() if t else {"name": name, "removed": True}
 

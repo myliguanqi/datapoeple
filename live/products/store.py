@@ -1,4 +1,5 @@
-"""产品库持久化：live_data/products.json（原子替换写入），线程安全 CRUD + 排序 + 当前讲解中的产品（active_id）。"""
+"""节目单持久化：每人设一个 live_data/programs/<人设 id>.json（原子替换写入），线程安全 CRUD + 排序 + 当前讲解中的条目（active_id）。
+切换人设时 switch_path() 换文件，ProductStore / ProductScript 的对象引用不变。"""
 from __future__ import annotations
 
 import copy
@@ -23,6 +24,8 @@ class ProductStore:
 
     # ------------------------------------------------------------------ 持久化
     def _load(self) -> None:
+        self.products = {}
+        self.active_id = None
         if not os.path.isfile(self.path):
             return
         try:
@@ -34,7 +37,15 @@ class ProductStore:
                     self.products[p.id] = p
             self.active_id = data.get("active_id") if data.get("active_id") in self.products else None
         except Exception as e:                      # noqa: BLE001
-            logger.warning(f"产品库读取失败（{self.path}），按空库启动: {e}")
+            logger.warning(f"节目单读取失败（{self.path}），按空库启动: {e}")
+
+    def switch_path(self, path: str, reason: str = "persona") -> None:
+        """切到另一个「人设」的节目单文件（对象不变，ProductScript / API 的引用仍有效）。"""
+        with self._lock:
+            self.path = path
+            self._load()
+        if self.bus is not None:
+            self.bus.publish("products.changed", {"reason": reason, "product_id": None, "active_id": self.active_id})
 
     def _save(self, reason: str = "update", product_id: str | None = None) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)

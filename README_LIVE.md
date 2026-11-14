@@ -14,6 +14,7 @@
 | 先不下载模型也能开发 | `mock` 后端：不需要模型、显卡、torch，整条链路（时钟、协议、网页、离线任务、多卡调度）都能跑 |
 | 抖音弹幕接入（第二阶段） | 独立子进程接抖音直播间（只读），弹幕/礼物/点赞/进场/关注/分享/粉丝团/在线人数/贡献榜全字段解析（性别、财富等级、粉丝团、本场消费…）；连击礼物结算一次；断线退避重连；Web 上改房间号即热切换；模拟弹幕源与 JSONL 录制/回放 |
 | 弹幕自动互动（第二阶段） | 导演层（移植参考项目）按优先级决定先谢礼、先答问题还是欢迎进场：礼物 S/M/L 分档、连续送礼、回踩、榜首易主、金主/熟客/高财富等级分级欢迎、关注/粉丝团/分享/点赞、人数猛涨承接、产品提问、购买意向；跨场长期记忆；模板话术零延迟，配了 LLM 用 LLM 写词（超时自动兜底）；所有台词过合规过滤；Web 可看决策日志、改触发器 |
+| 可切换人设模板（第三阶段 P9） | 一个人设 = 提示词 + 弹幕意图 + 触发器 + 称呼 + 字数限制 + 知识库兜底 + 节目单叫法，打包成模板；出厂三套：带货主播 / 讲解主播（讲解视频、系统介绍）/ 娱乐主播（聊天接梗、整活、游戏陪伴、知识问答）；节目单和知识库按人设隔离，视频素材共用；只停播时可切换，切换自动打断播报、清队列、重置导演和场景，没有上一个人设的残留；Web「人设」页可复制和完整编辑 |
 | 产品知识库与讲品（第二阶段） | 上传 html / pdf / md 产品资料（可关联产品，或作为公共资料），自动解析、切块、建索引（SQLite FTS5 + jieba；可选向量混合检索）；观众问产品问题时只依据资料回答（配了 LLM 由 LLM 组织语言，没配就念资料原句），资料里没有就说「帮您确认 / 看商品详情 / 问客服」，不编造；讲解稿可一键用知识库生成（过合规、人工确认后才播），没有弹幕时按讲解稿轮播讲品，有互动先回应再断点续讲 |
 | 视频素材与直播画面（第二阶段） | 上传产品视频 / 背景图；直播场景页 `/scene`（竖屏 720×1280，给 OBS 用）= 背景 + 视频 + 数字人 + 产品卡片 + 字幕 + 常驻 AI 标识；视频可全屏 / 画中画 / 分屏、原声或静音，手动「立即播放」或讲品时自动插播；带原声时讲品暂停、数字人声音压低，播完回到数字人并续讲，数字人画面全程不断 |
 | 火山 TTS + 大模型（第二阶段） | 火山声音复刻 TTS（V3 SSE，合成缓存、语速、每日字数上限，没凭证自动回退 edge → mock）；OpenAI 兼容 LLM（`.env` 配置，流式按句播报，超时 / 失败 / 没配置一律回退模板话术）；Embedding 可选 |
@@ -27,16 +28,16 @@
 live/                       服务层（Python 包）
   server.py                 FastAPI app 工厂 + 写操作鉴权中间件
   app_context.py            统一构造、注入所有服务（AppContext）
-  api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、danmaku、interaction、host、knowledge、products、media、console_ws）
+  api/                      HTTP / WebSocket 路由（system、sessions、offline、settings、danmaku、interaction、personas、host、knowledge、products、media、console_ws）
   core/                     统一事件模型 events、事件总线 bus、实现注册表 registry、可注入时钟 clock、每日计费用量 usage
   settings/                 设置中心：schema（所有配置项的单一来源）、store（三层合并 + 热更新 + 版本回滚）、env（.env 密钥）
   feed.py                   控制台推送（事件总线 → /ws/console，点赞/进场节流）
-  interaction/              互动引擎：director（导演）、state、memory（长期记忆）、queue、intent、compliance、engine；
-    policies/               commerce.yaml（触发器表）、persona_commerce.md（带货主播人设）
+  interaction/              互动引擎：director（导演）、state、memory（长期记忆）、queue、intent、compliance、signals、engine
+  personas/                 人设模板：models / store / service / migrate；builtin/{commerce,explainer,entertainment}/（只读模板）
   host/                     主持人：host（编排）、composer（写词，接知识库）、session_tap
-  knowledge/                产品知识库：loaders（md/html/pdf）、chunker、text（分词/查询/覆盖度/摘句）、index（fts/bm25/hybrid）、store、service
-  products/                 产品库（products.json）、讲品轮播 script、讲解稿生成 generator
-  media/                    素材库 store（ffprobe + 封面）、直播场景 scene（布局 / 产品卡片 / 视频）
+  knowledge/                知识库：每人设一个 live_data/kb/<id>/；loaders（md/html/pdf）、chunker、text（分词/查询/覆盖度/摘句）、index（fts/bm25/hybrid）、store、service
+  products/                 每人设的节目单（live_data/programs/<id>.json）、轮播 script、讲解稿生成 generator
+  media/                    素材库 store（ffprobe + 封面）、直播场景 scene（布局 / 条目卡片 / 视频）
   danmaku/                  弹幕接入：manager（子进程管理）、process（子进程入口）、mock、replay、recorder、cookie；
     douyin/                 抖音：parse.py（protobuf → 统一事件，纯函数 + 连击聚合）、adapter.py（接管 vendor fetcher）
   manager.py                会话管理
@@ -61,7 +62,7 @@ vendor/douyin_fetcher/      第三方 DouyinLiveWebFetcher（AGPL-3.0，原样�
 web/                        网页客户端（原生 ES modules，无需构建，直接由服务端提供）
   index.html  app.js（外壳/路由）  api.js  ui.js  player.js  style.css
   scene.html  scene.js      直播场景页 /scene（OBS 浏览器源）
-  pages/                    每页一个模块：console danmaku products media settings system offline
+  pages/                    每页一个模块：console personas danmaku products media settings system offline
 docs/live/
   ARCHITECTURE.md           架构、线程模型、调度与音画同步原理
   API.md                    REST / WebSocket 接口与二进制协议
@@ -72,6 +73,8 @@ tests/live/
   test_e2e_commerce.py      带货全链路（起 mock 服务后运行，16 项）
   test_e2e_products.py      讲品 + 知识库（起 mock 服务后运行，15 项）
   test_e2e_scene.py         视频素材 + 直播场景（起 mock 服务后运行，需 ffmpeg，15 项）
+  test_e2e_personas.py      人设切换（起 mock 服务后运行，10 项；建议最后跑）
+  test_p9_personas.py       人设模板：切换/复制/编辑/意图/触发器/节目单与知识库隔离/旧数据迁移
   test_*.py                 pytest 单元/集成测试（python -m pytest tests/live -q；不起服务、不调计费接口）
   page_sweep.js             网页走查脚本（DevTools 协议执行：各页面横向溢出 / JS 报错）
 tests/fixtures/             自造样例：知识库资料（md / html / pdf）、火山 SSE 响应
@@ -103,7 +106,7 @@ python live_server.py --config live/configs/mock.yaml
 浏览器打开 <http://127.0.0.1:8000/>，在「直播控制台」点「连接」：能看到参考图在微动（左上角显示 `MOCK LITE IDLE`），
 在「人工插话」输入文字点「说」，嘴会按合成音张合，字幕同步显示。mock 模拟了两张卡：default 直播在 GPU0，离线任务在 GPU1。
 
-网页按功能分页（左侧栏）：直播控制台 / 弹幕互动 / 产品与知识库 / 视频素材 / 直播间设置 / 数字人与系统 / 离线视频。
+网页按功能分页（左侧栏）：直播控制台 / 人设 / 弹幕互动 / 节目与知识库 / 视频素材 / 直播间设置 / 数字人与系统 / 离线视频。
 **「直播间设置」页可以改所有配置项**：标「即时生效」的保存后立刻生效（不用重启），标「需重启」的保存后提示重启；
 支持导出/导入、历史版本回滚（最近 20 份）、恢复默认。Web 上的修改保存在 `live_data/settings.json`，优先级高于 yaml。
 
@@ -173,30 +176,47 @@ python live_server.py --config live/configs/live.yaml
 
 连上之后数字人会自动互动：谢礼物、答产品问题、欢迎进场、承接人数猛涨……「弹幕互动 → 决策日志」能看到每一句是哪个事件、
 哪个触发器、模板还是 LLM 写的；「触发器」页可以改优先级、冷却和话术；「直播控制台」有「暂停互动」和「人工插话」（最高优先级，可先打断）。
-没接弹幕时数字人不会自己"互动"（冷场话术也不出）；但有已确认的讲解稿时会照常讲品（见下一节，控制台可「暂停讲品」）。
+没接弹幕时数字人不会自己"互动"（冷场话术也不出）；但有已确认的讲解稿时会照常讲解（见下一节，控制台可「暂停讲解」）。
 
 只接收消息，不发弹幕、不点赞、不私信；只用于自己的直播间。抖音对 AI 数字人直播有标识等规范，开播前请查阅平台最新规则。
 
-### 4. 产品与知识库、讲品
+### 4. 节目与知识库、讲解稿轮播
 
-1. 「产品与知识库」页点「新建产品」，在「基本信息」填名称、价格/机制、卖点。
+1. 「节目与知识库」页点「新建商品/讲解主题」（按钮名随当前人设变），在「基本信息」填名称、价格/机制、卖点。
 2. 「资料」标签把这个产品的 html / pdf / md 拖进去（可多选）；店铺通用的售后、发货政策放「公共资料」，所有产品都能检索到。
    文件名会改成随机 ID 保存在 `live_data/kb/files/`；扫描版 PDF 没有文字层，不支持（不做 OCR）。
 3. 「测试」标签：**检索测试**看命中了哪些片段、问题的信息点覆盖了多少（不够就会说「帮您确认」）；**回答测试**看数字人最终会怎么回答，可勾「让数字人说」。
 4. 「讲解稿」标签点「用知识库生成」（配了 LLM 用 LLM 写，没配用模板拼草稿），逐段检查、勾「已确认」后保存——**只有确认过的段落才会播**。
-5. 没有互动时，主持人就按讲解稿逐段讲当前产品；礼物、产品提问、购买意向等高优先级互动会打断讲品，回应完从被打断的那段接着讲；
-   讲满「讲解时长」换下一个启用的产品（左侧列表拖动排序）。控制台「当前产品」可以切产品、跳到下一段，「暂停讲品」随时停。
-   话术里的 `{product}` 就是当前产品，观众提问也只在当前产品 + 公共资料里检索。
+5. 没有互动时，主持人就按讲解稿逐段讲当前条目；礼物、当前人设的提问意图等高优先级互动会打断讲解，回应完从被打断的那段接着讲；
+   讲满「讲解时长」换下一个启用的条目（左侧列表拖动排序）。控制台「当前条目」可以切换、跳到下一段，「暂停讲解」随时停。
+   话术里的 `{product}` / `{item}` 就是当前条目，观众提问只在当前人设的知识库（当前条目 + 该人设公共资料）里检索。
 
-检索参数（后端、top_k、覆盖度门槛、同义词、切块长度）在「直播间设置 → 知识库与讲品」，改了即时生效；改切块参数后要在产品页点「重建索引」。
+检索参数（后端、top_k、覆盖度门槛、同义词、切块长度）在「直播间设置 → 知识库与讲品」，改了即时生效；改切块参数后要在节目页点「重建索引」。
 开向量检索（`knowledge.backend: hybrid` + `knowledge.embedding.enabled`）要在 `.env` 配 `EMBEDDING_API_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`，**按调用计费**。
+
+### 4b. 人设模板（带货 / 讲解 / 娱乐）
+
+出厂三套人设：**带货主播**（商品讲解、价格机制、购买意向）、**讲解主播**（讲解视频、系统介绍、原理科普，不卖货）、
+**娱乐主播**（聊天接梗、整活、游戏陪伴、知识问答，不卖货）。一个模板里打包了提示词、弹幕意图、触发器、称呼、字数、知识库兜底
+和节目单叫法；节目单和知识库按人设各自独立，视频素材库共用。
+
+1. 「人设」页看三套出厂模板。出厂模板只读，点「复制」生成自己的模板，再点「编辑」改提示词、弹幕意图、触发器、称呼和节目单叫法。
+2. 切换只在**停播**时允许：先在「数字人与系统」页关闭当前会话、在「弹幕互动」页断开弹幕，再点「使用」；切换会打断当前播报、清空互动队列和决策日志、
+   换节目单与知识库，不会残留上一个人设的台词和资料。
+3. 当前人设的节目单和知识库在「节目与知识库」页管理：带货人设叫「商品」，讲解人设叫「讲解主题」，娱乐人设可以留空。
+   即使当前用出厂人设，也可以直接加条目、传资料（数据属于这个人设）。
+4. 想看讲解/娱乐效果：复制 `explainer` 或 `entertainment` → 切换 → 在「模拟」页用当前人设的意图按钮注入弹幕，或直接连接直播间。
+5. 模板目录、字段、`qa` 模式、触发器占位符和迁移规则见 [docs/live/PERSONAS.md](docs/live/PERSONAS.md)。
+
+> 旧版本升级：第一次启动会把原来散在设置里的 `persona.*` / `interaction.triggers` / 意图关键词 / `knowledge.no_answer_text`、
+> `products.json` 和单一知识库迁移成一个用户模板「带货主播（迁移）」，原设置备份为 `settings.json.pre-persona.bak`。
 
 ### 5. 直播画面（场景页）/ OBS 推流
 
 **完整直播画面**：OBS 里加「浏览器源」，地址 `http://127.0.0.1:8000/scene?session=default`，宽高 **720×1280**（= 设置 `scene.width/height`），
 勾选「通过 OBS 控制音频」。画面 = 背景 + 视频 + 数字人 + 当前产品卡片 + 字幕 + 左上角常驻「本直播间为 AI 数字人直播」（文案可改、不能关）。
 - 「视频素材」页上传产品视频（mp4 / webm），点「立即播放」选 全屏 / 画中画 / 分屏、原声 / 静音；图片可「设为背景」。
-- 产品与知识库 → 视频 标签把视频关联到产品，讲品时每讲完一轮自动插播一个（`products.video_slot`）。
+- 节目与知识库 → 视频 标签把视频关联到当前人设的条目，轮播时每讲完一轮自动插播一个（`products.video_slot`）。
 - 视频带原声时讲品暂停、数字人声音压低到 `scene.ducking`，播完回到数字人并从被打断的那段续讲；静音视频时数字人可以照常讲。
 - 位置、大小、卡片样式、字幕在「直播间设置 → 直播画面」改，即时生效；`/scene?debug=1` 显示布局框。控制台「直播画面」卡片可以嵌一个静音预览。
 - 普通浏览器打开要点一下页面才出声；OBS 浏览器源不需要。
@@ -242,8 +262,9 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 | `llm.*` | | 温度、max_tokens、流式、防复读条数、每日调用上限；地址/密钥/模型在 `.env` 的 `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` |
 | `knowledge.backend` / `top_k` / `min_coverage` | fts / 4 / 0.5 | 检索后端（fts / bm25 / hybrid）；每次取几段资料；问题信息点被资料覆盖不到这个比例就说「帮您确认」 |
 | `knowledge.chunk_chars` / `chunk_overlap` / `synonyms` | 400 / 50 / 内置 | 切块长度与重叠（改了要重建索引）；检索同义词（「多少钱」→ 价格） |
-| `products.rotation_enabled` / `duration_s` / `segment_gap_s` / `require_confirmed_script` | 开 / 300 / 2 / 开 | 讲品轮播、每个产品讲多久、段间停顿、只播已确认的讲解稿 |
-| `products.video_slot` | end | 讲品中自动插播产品视频：end 每轮讲完 / start 每轮开讲前 / off 只手动 |
+| `products.rotation_enabled` / `duration_s` / `segment_gap_s` / `require_confirmed_script` | 开 / 300 / 2 / 开 | 节目轮播、每个条目讲多久、段间停顿、只播已确认的讲解稿 |
+| `products.video_slot` | end | 轮播中自动插播条目视频：end 每轮讲完 / start 每轮开讲前 / off 只手动 |
+| `personas.default` | commerce | 没有在「人设」页选过时用哪套出厂模板（commerce / explainer / entertainment）；人设内容本身在模板里，不在这里 |
 | `scene.width` / `height` / `dh_rect` / `pip_rect` / `card_rect` | 720 / 1280 / … | 直播画面尺寸与各元素位置（画布像素） |
 | `scene.ducking` / `scene.video.default_mode` / `default_audio` | 0.3 / pip / video | 视频原声时数字人音量；「立即播放」默认布局与声音 |
 
@@ -280,11 +301,16 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 
 ## 已验证 / 未验证
 
-第二阶段（P0–P8）完成时的测试：pytest 199 项 + 端到端 33（mock 原有）+ 16（带货互动）+ 15（讲品知识库）+ 15（视频场景）项
-+ 真实推理后端逻辑 18 项全部通过，**全程没有调用任何计费接口**；07 §4 人工验收清单 mock 模式逐条走查结果见
-[任务书进度表](docs/tasks/phase2-live-commerce/README.md)。还需要你在真实环境验证的事项汇总在下一节。
+第三阶段 P9（人设模板）完成后的测试：pytest **210 项**（新增 `test_p9_personas.py` 11 项：三套出厂模板校验、模板读写、
+切换/复制/编辑、触发器增删改、娱乐人设意图、先来先答消费、人设切换清残留、停播校验、节目单与知识库隔离、旧设置/产品/知识库迁移）；
+端到端 33（mock 原有）+ 16（带货互动）+ 15（讲品知识库）+ 15（视频场景）+ 10（人设切换）项 + 真实推理后端逻辑 18 项全部通过，
+**全程没有调用任何计费接口**。人设切换 e2e：停播 → 复制娱乐人设并切换 → 节目单/知识库为空 → 「讲个笑话」命中 joke_request、
+没有带货意图残留 → 垃圾弹幕不回应 → 切回原人设并删除测试人设（连同它的节目单/知识库）；人设页在 Chrome 无头（CDP）下确认
+三套模板、编辑器五个标签、改基本信息保存、添加触发器都能工作，无 JS 报错。
+07 §4 人工验收清单 mock 模式逐条走查结果见[任务书进度表](docs/tasks/phase2-live-commerce/README.md)。还需要你在真实环境验证的事项汇总在下一节。
 
 - ✅ 第二阶段 P7（网页走查）：7 个页面、30 个页面/标签视图在亮暗两套主题、1366×768 与 390 宽下无横向溢出、无 JS 报错
+  （P9 新增「人设」页后共 8 个页面；人设页另做 Chrome 无头 CDP 检查，见上一段）
   （走查脚本 `tests/live/page_sweep.js`，Edge 无头 + DevTools 协议执行）；「数字人与系统」页有 TTS / LLM / 知识库与 Embedding / 弹幕子进程四张状态卡。
 - ✅ 第二阶段 P6（视频素材 + 直播场景）：pytest 8 项（ffmpeg 现场生成测试视频：ffprobe 时长/分辨率/音轨、封面、图片、
   拒绝非视频/超大/错误扩展名、重启后索引还在；场景状态机（假时钟）：各布局、play_id 对不上忽略、多个场景页回传只算一次、
@@ -347,7 +373,7 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 | 6 | 连击礼物规律 | 连击送同一礼物，决策日志只答谢一次、数量对；看录制的 combo_count / repeat_count / group_count | `danmaku.combo_timeout_s`、`GiftComboAggregator` |
 | 7 | 关注与分享的区分、带货房间商品消息的 method 名 | 探针里看 `WebcastSocialMessage` 的 action / share_type、商品上下架时出现的新 method | `parse.py` |
 | 8 | 火山 TTS（**计费**） | `.env` 填 `VOLC_*` 后跑 `python -m live.tts.volc "测试一句"`：16k 采样率是否被服务端接受、音色对不对 | 不支持 16k 就把 `tts.volc.sample_rate` 改 24000（自动重采样） |
-| 9 | 大模型（**计费**） | `.env` 填 `LLM_*`，「数字人与系统」看可用与首字耗时；「产品与知识库 → 测试」看回答是否只用资料、讲解稿生成质量 | `persona.prompt` / `persona.rag_prompt` / `persona.script_prompt`，`host.compose_timeout_s` |
+| 9 | 大模型（**计费**） | `.env` 填 `LLM_*`，「数字人与系统」看可用与首字耗时；「节目与知识库 → 测试」看回答是否只用资料、讲解稿生成质量 | 「人设 → 提示词」里的 `prompt` / `rag_prompt` / `script_prompt`，`host.compose_timeout_s` |
 | 10 | 向量检索（**计费，可选**） | `.env` 填 `EMBEDDING_*`、`knowledge.backend: hybrid` + `knowledge.embedding.enabled`，检索测试对比效果 | `knowledge.*` |
 | 11 | OBS 采集 | OBS 浏览器源加载 `/scene?session=default`、720×1280、勾「通过 OBS 控制音频」：画面、口型与声音同步、视频原声与数字人声音的 ducking | `scene.*`；客户端缓冲 `latency=` URL 参数 |
 | 12 | 真实模型推理 | 下载权重后按 `docs/live/DEVELOPMENT.md`「拿到模型后第一件事」：worker 加载、torch.compile、Lite/Pro 实际 RTF、空闲动作是否自然 | `models.*`、`idle.*`、`speech.*` |
@@ -356,6 +382,8 @@ requests.post("http://127.0.0.1:8000/api/sessions/default/speak",
 ## 文档
 
 - [架构与原理](docs/live/ARCHITECTURE.md)
+- [人设模板说明](docs/live/PERSONAS.md)
 - [接口文档](docs/live/API.md)
 - [二次开发指南](docs/live/DEVELOPMENT.md)
-- [第二阶段任务书（P0–P8 已完成）：弹幕互动 + 火山 TTS + LLM + 知识库 + 视频场景 + Web 设置热更新](docs/tasks/phase2-live-commerce/README.md)
+- [第二阶段任务书（P0–P8 已完成，历史）：弹幕互动 + 火山 TTS + LLM + 知识库 + 视频场景 + Web 设置热更新](docs/tasks/phase2-live-commerce/README.md)
+- [第三阶段 P9 任务书：人设模板（带货 / 讲解 / 娱乐，可切换）](docs/tasks/phase3-persona/README.md)

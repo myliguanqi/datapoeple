@@ -103,11 +103,11 @@ class InteractionEngine:
         return out
 
     def _emit(self, cue: Cue) -> None:
-        trg = self.director.trigger(cue.event)
-        if trg is not None and trg.when == "product_question" and cue.source and cue.source.get("msg_id"):
-            self.state.consume_question(cue.source["msg_id"])       # 提问先来先答，答完下一条
-            if self.memory is not None and cue.user and cue.user.get("user_id"):
-                self.memory.note_question(cue.user["user_id"], cue.question)
+        # 先来先答的意图：回应完从队列移除，下一条接着答；普通意图靠导演的消费标记防重复。
+        if cue.intent and cue.first_come and cue.source and cue.source.get("msg_id"):
+            self.state.consume_intent(cue.intent, cue.source["msg_id"])
+        if cue.intent and cue.qa != "off" and self.memory is not None and cue.user and cue.user.get("user_id"):
+            self.memory.note_question(cue.user["user_id"], cue.question)
         self.add_log(cue)
         self.bus.publish("interaction.cue", cue.to_dict())
         self.queue.push(cue)
@@ -146,6 +146,24 @@ class InteractionEngine:
             n = self.queue.clear("互动已暂停")
             if n:
                 logger.info(f"互动已暂停，清掉队列里 {n} 条")
+
+    def reset(self, reason: str = "切换人设") -> None:
+        """切换人设：重建意图队列、清空旧弹幕/队列/决策日志，并重置导演的冷却和消费标记。"""
+        with self._tick_lock:
+            self.state.configure()
+            self.state.reset()
+            self.director.reset()
+            self.queue.clear(reason)
+            with self._lock:
+                self.log.clear()
+            self._last_event_ts = -1e9
+
+    def reload_persona(self, reason: str = "人设已修改") -> None:
+        """编辑当前人设：立即重读意图/触发器，丢掉已排队但按旧规则产出的 cue。"""
+        with self._tick_lock:
+            self.state.configure()
+            self.director.reload_triggers()
+            self.queue.clear(reason)
 
     def stop(self) -> None:
         self._stop.set()

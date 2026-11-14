@@ -147,6 +147,17 @@ class Host:
                 self._finish_locked("interrupted", "手动打断")
         return r
 
+    def reset(self, reason: str = "切换人设") -> None:
+        """切换人设：丢掉正在说的 cue、队列与历史，避免新人设继承旧台词。"""
+        self.queue.clear(reason)
+        with self._cv:
+            cur = self.current
+            self.current = None
+            if cur is not None:
+                cur["cancel"].set()
+            self.history.clear()
+            self._cv.notify_all()
+
     def status(self) -> dict:
         with self._cv:
             cur = self.current

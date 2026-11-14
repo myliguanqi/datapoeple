@@ -5,7 +5,7 @@
   short_name("六哥牛杂", "male") → "六哥"（已自带称呼尾不再加）
   short_name("王阿姨", "female") → "王阿姨"（三个字以内、本身以称呼字结尾的原样叫）
   short_name("用户12345") → "用户"+后缀；纯英文/数字昵称同理
-后缀与尊称来自设置 persona.honorific / persona.big_honorific，可按需改。
+后缀与尊称来自当前人设模板的 honorific / big_honorific，可在「人设」页改。
 """
 from __future__ import annotations
 

@@ -1,0 +1,313 @@
+# ============================================================
+# 讲解主播触发器表（出厂模板，只读）
+# 平台事件（礼物/进场/关注/点赞/人数）照常回应；弹幕意图是 topic_question / followup_question。
+# 不卖货：没有购买意向、产品提问、下单引导的触发器。
+# 字段说明见 docs/live/PERSONAS.md；话术里的 {占位符} 见 director._fmt。
+# ============================================================
+
+gift_l:
+  when: gift_l
+  priority: 63
+  emotion: 感激高能
+  target_energy: 0.95
+  cooldown_s: 0
+  max_stale_s: 90
+  use_llm: false
+  role: who
+  directive: "重磅礼物：隆重点名感谢，说出谁送了几个什么礼物，夸排面，不承诺任何回报"
+  lines:
+    - "哇！感谢{gift_user}送的{gift_count}个{gift_name}！{gift_honor}太给力了，谢谢您的支持！"
+    - "感谢{gift_user}的{gift_name}{gift_count}个！{gift_honor}破费了，今天必须把内容讲得更细！"
+
+repeat_gift:
+  when: repeat_gift
+  priority: 61
+  emotion: 感激高能
+  target_energy: 0.85
+  cooldown_s: 0
+  max_stale_s: 60
+  use_llm: false
+  role: who
+  directive: "同一位观众又送礼：再次点名感谢，语气更熟络"
+  lines:
+    - "{gift_user}又送了{gift_count}个{gift_name}，太感谢了！{gift_honor}今天一直陪着我们！"
+
+gift_m:
+  when: gift_m
+  priority: 60
+  emotion: 感激高能
+  target_energy: 0.8
+  cooldown_s: 0
+  max_stale_s: 60
+  use_llm: false
+  role: who
+  directive: "礼物答谢：点名谁送了几个什么礼物，真诚感谢"
+  lines:
+    - "感谢{gift_user}送的{gift_count}个{gift_name}！谢谢{gift_honor}的支持！"
+    - "{gift_user}的{gift_name}收到啦，{gift_count}个！{gift_honor}破费了，谢谢！"
+
+gift_s:
+  when: gift_s
+  priority: 59
+  emotion: 感激高能
+  target_energy: 0.6
+  cooldown_s: 2
+  max_stale_s: 45
+  use_llm: false
+  role: who
+  directive: "小礼物答谢：轻快地谢一下，说出礼物名"
+  lines:
+    - "谢谢{gift_user}的{gift_name}！"
+    - "感谢{gift_user}送的{gift_count}个{gift_name}，比心！"
+
+gift_king_dethroned:
+  when: gift_king_dethroned
+  priority: 57
+  emotion: 激动
+  target_energy: 0.8
+  cooldown_s: 60
+  max_stale_s: 45
+  use_llm: false
+  directive: "本场礼物榜榜一换人了：只说事实排名，夸新榜一，不承诺任何权益"
+  lines:
+    - "本场礼物榜换人啦！{gift_king_user}以{gift_king_value}钻冲到了本场榜首，感谢{gift_king_honor}！"
+
+followup_question:
+  when: followup_question
+  priority: 54
+  emotion: 轻松互动
+  target_energy: 0.55
+  cooldown_s: 3
+  max_stale_s: 30
+  use_llm: true
+  directive: "观众要求展开或没听懂：先接住，再用资料里的内容换一种更通俗的说法讲清楚；资料没有就说帮您确认"
+  lines:
+    - "{asker}问得细！我把这一点再展开讲讲，您看这样是不是更清楚？"
+    - "好嘞{asker}，我再换个说法讲一遍，没讲明白的地方您随时打断我！"
+
+topic_question:
+  when: topic_question
+  priority: 52
+  emotion: 轻松互动
+  target_energy: 0.55
+  cooldown_s: 3
+  max_stale_s: 30
+  use_llm: true
+  directive: "观众问了正在讲的主题：先称呼他，再只根据资料口语化回答；资料没有就说帮您确认，绝不编造"
+  lines:
+    - "{asker}问得好！这个我帮您确认一下，您也可以把想了解的点打在公屏上，我接着讲。"
+    - "收到{asker}的问题！我按资料里写的给您讲，没写到的地方我帮您确认一下。"
+
+follow:
+  when: has_new_follow
+  priority: 50
+  emotion: 感激高能
+  target_energy: 0.6
+  cooldown_s: 6
+  max_stale_s: 20
+  use_llm: false
+  role: who
+  directive: "有人关注了：点名感谢关注"
+  lines:
+    - "感谢{follow_user}的关注！以后有新内容第一时间讲给您听！"
+    - "谢谢{follow_user}点了关注，欢迎常来！"
+
+fansclub:
+  when: has_fansclub
+  priority: 49
+  emotion: 感激高能
+  target_energy: 0.65
+  cooldown_s: 10
+  max_stale_s: 20
+  use_llm: false
+  directive: "有人加入粉丝团或粉丝团升级：点名感谢"
+  lines:
+    - "欢迎{fans_user}加入粉丝团！以后就是自家人啦！"
+
+chat_reply:
+  when: has_new_chat
+  priority: 47
+  emotion: 轻松互动
+  target_energy: 0.5
+  cooldown_s: 4
+  max_stale_s: 12
+  use_llm: true
+  role: who
+  directive: "回应这条弹幕：先简短接住观众的话，再自然拉回到正在讲的内容；不卖货"
+  lines:
+    - "{chat_user}说「{chat_content}」，我看到啦！"
+    - "收到{chat_user}的弹幕，谢谢捧场！"
+
+gift_followup:
+  when: gift_followup
+  priority: 46
+  emotion: 感激高能
+  target_energy: 0.6
+  cooldown_s: 8
+  max_stale_s: 30
+  use_llm: false
+  directive: "刚才送礼的观众，隔一会儿再谢一次，不承诺任何回报"
+  lines:
+    - "再谢一次{gift_user}刚才的{gift_name}，{gift_honor}真的很给力！"
+
+welcome_vip:
+  when: vip_member
+  priority: 45
+  emotion: 感激高能
+  target_energy: 0.75
+  cooldown_s: 10
+  max_stale_s: 30
+  use_llm: false
+  role: who
+  directive: "以前送过很多礼物的老观众回来了：热情欢迎，当老朋友"
+  lines:
+    - "欢迎{member_user}回来！{member_honor}又来看我啦，今天讲的内容您一定感兴趣！"
+
+welcome_grade:
+  when: high_grade_member
+  priority: 44
+  emotion: 感激高能
+  target_energy: 0.7
+  cooldown_s: 10
+  max_stale_s: 25
+  use_llm: false
+  role: who
+  directive: "财富等级很高的观众进场：高规格欢迎，点名称呼"
+  lines:
+    - "欢迎{member_user}{member_grade_tag}来到直播间！今天的内容我给您讲细一点！"
+
+share:
+  when: has_share
+  priority: 40
+  emotion: 感激高能
+  target_energy: 0.5
+  cooldown_s: 15
+  max_stale_s: 20
+  use_llm: false
+  directive: "有人分享了直播间：点名感谢分享"
+  lines:
+    - "感谢{share_user}分享直播间，太贴心了！"
+
+welcome_regular:
+  when: regular_member
+  priority: 23
+  emotion: 轻松互动
+  target_energy: 0.45
+  cooldown_s: 12
+  max_stale_s: 20
+  use_llm: false
+  role: who
+  merge_clause: "欢迎老朋友{member_user}"
+  merge_with: [viewer_surge]
+  directive: "常来的熟客又来了：当老朋友打个招呼"
+  lines:
+    - "{member_user}又来啦，老朋友了，欢迎欢迎！"
+
+welcome_back:
+  when: returning_member
+  priority: 22
+  emotion: 轻松互动
+  target_energy: 0.4
+  cooldown_s: 15
+  max_stale_s: 20
+  use_llm: false
+  role: who
+  merge_clause: "欢迎{member_user}回来"
+  merge_with: [viewer_surge]
+  directive: "本场来过又回来的观众：简单欢迎回来"
+  lines:
+    - "{member_user}回来啦，欢迎欢迎！"
+
+viewer_surge:
+  when: viewer_surge
+  priority: 22
+  emotion: 激动
+  target_energy: 0.6
+  cooldown_s: 60
+  max_stale_s: 30
+  use_llm: false
+  role: what
+  merge_clause: "直播间一下子来了好多新朋友"
+  directive: "在线人数猛涨：欢迎新朋友，简单介绍今天在讲什么、可以怎么提问"
+  lines:
+    - "欢迎刚进直播间的新朋友们！今天在讲{product}，有想了解的直接打在公屏上！"
+    - "人气涨起来了！新来的朋友，咱们正在讲{product}，有问题随时问！"
+
+welcome_member:
+  when: has_new_member
+  priority: 20
+  emotion: 轻松互动
+  target_energy: 0.35
+  cooldown_s: 12
+  max_stale_s: 20
+  use_llm: false
+  role: who
+  merge_clause: "欢迎{member_user}"
+  merge_with: [viewer_surge]
+  directive: "普通观众进场：轻点名欢迎，不刷屏"
+  lines:
+    - "欢迎{member_user}来到直播间！"
+    - "{member_user}来啦，欢迎欢迎！"
+
+like:
+  when: has_like
+  priority: 18
+  emotion: 轻松互动
+  target_energy: 0.4
+  cooldown_s: 20
+  max_stale_s: 30
+  use_llm: false
+  directive: "点名点赞最多的观众，感谢点赞"
+  lines:
+    - "谢谢{like_user}的点赞！家人们点点赞，让更多朋友看到咱们！"
+
+viewer_drain:
+  when: viewer_drain
+  priority: 9
+  emotion: 轻松互动
+  target_energy: 0.4
+  cooldown_s: 90
+  max_stale_s: 30
+  use_llm: false
+  directive: "在线人数在掉：不说人少，给留下来的朋友一个留下的理由（接下来讲什么）"
+  lines:
+    - "还在直播间的朋友别走开，接下来我把{product}再讲细一点，有问题随时问！"
+    - "留下来的都是真爱，有什么想了解的直接打在公屏上，我一个个回答！"
+
+online_milestone:
+  when: online_milestone
+  priority: 7
+  emotion: 激动
+  target_energy: 0.6
+  cooldown_s: 120
+  max_stale_s: 45
+  use_llm: false
+  directive: "在线人数破了一个整数台阶：感谢大家"
+  lines:
+    - "直播间在线破{milestone}人啦，谢谢大家的支持！"
+
+idle_interact:
+  when: has_online_viewers
+  priority: 2
+  emotion: 轻松互动
+  target_energy: 0.3
+  cooldown_s: 45
+  max_stale_s: 30
+  use_llm: false
+  directive: "冷场时点名一位在线观众，邀请他提问"
+  lines:
+    - "{viewer_name}还在吗？有什么想了解的可以打在公屏上哦！"
+
+idle:
+  when: always
+  priority: 0
+  emotion: 轻松互动
+  target_energy: 0.25
+  cooldown_s: 25
+  max_stale_s: 30
+  use_llm: false
+  directive: "平静期：自然聊聊正在讲的内容，或者邀请观众提问"
+  lines:
+    - "欢迎来到{shop_or_anchor}的直播间，今天讲{product}，有问题随时打在公屏上！"
+    - "新来的朋友可以先把问题打在公屏上，我按顺序给大家讲。"
+    - "对{product}还有哪里没听明白的，直接问，我换个说法再讲一遍。"

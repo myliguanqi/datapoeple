@@ -44,6 +44,7 @@ def load_config(path: str | None = None, overrides: dict | None = None) -> dict:
     if overrides:
         _deep_merge(cfg, copy.deepcopy(overrides))
     _normalize(cfg)
+    _ensure_persona(cfg)
     return cfg
 
 
@@ -52,6 +53,21 @@ def abs_path(val):
     if val and isinstance(val, str) and not os.path.isabs(val):
         return os.path.normpath(os.path.join(PROJECT_ROOT, val))
     return val
+
+
+def _ensure_persona(cfg: dict) -> None:
+    """不经过 AppContext（worker / 单元测试直接 load_config）时，也带上默认人设模板。
+
+    正式启动时 PersonaService 会立刻用 live_data 里的当前人设覆盖它。
+    """
+    if isinstance(cfg.get("persona"), dict) and cfg["persona"].get("id"):
+        return
+    from live.personas.store import load_builtin
+    pid = (cfg.get("personas") or {}).get("default") or "commerce"
+    try:
+        cfg["persona"] = load_builtin(pid)
+    except KeyError:
+        cfg["persona"] = load_builtin("commerce")
 
 
 def _normalize(cfg: dict) -> None:

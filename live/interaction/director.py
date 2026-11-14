@@ -5,7 +5,8 @@
 - 信号派生 _derive()：礼物 S/M/L 分档（单笔总价值，互斥）、连续送礼、送礼后回踩、本场礼物榜榜首易主（挂起等空档播）、
   欢迎分级（金主回归 / 高财富等级 / 熟客 / 本场回头客 / 普通）、关注、粉丝团、分享、点赞最猛者、人数猛涨/下滑/破整（台阶锁存）、
   冷场点名；带货新增：产品提问、购买意向、闲聊弹幕。
-- 触发器表：policies/commerce.yaml（出厂）+ 设置 interaction.triggers（Web 覆盖，热更新）；按 priority 高→低。
+- 触发器表：当前人设模板的 triggers.yaml（cfg["persona"]["triggers"]，热更新）；按 priority 高→低。
+  平台信号之外，人设的每个弹幕意图（intents[].name）也是一个信号，由 RoomSnapshot.recent_by_intent 派生。
 - 冷却：每个触发器 cooldown_s；点赞最猛者还是同一人时冷却 × interaction.like.repeat_cooldown_factor。
 - 发声节流：优先级 < interaction.urgent_priority 的，要等"距上次发声 ≥ 动态间隔"（能量越高间隔越短）。
 - 同拍合并：who（点名）+ what（场面）都命中且在 merge_with 白名单里 → 合成一句。
@@ -14,7 +15,6 @@
 """
 from __future__ import annotations
 
-import os
 import random
 from collections import deque
 from dataclasses import dataclass, field
@@ -26,21 +26,14 @@ from loguru import logger
 from live.core.clock import SYSTEM_CLOCK, Clock
 from live.interaction.cue import Cue
 from live.interaction.names import honor, short_name
+from live.interaction.signals import PLATFORM_SIGNALS, TRIGGER_FIELDS
 from live.interaction.state import RoomSnapshot
 
-POLICY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "policies", "commerce.yaml")
-SIGNALS = frozenset({
-    "has_big_gift", "gift_s", "gift_m", "gift_l", "repeat_gift", "gift_followup", "gift_king_dethroned",
-    "has_new_chat", "product_question", "purchase_intent",
-    "has_new_member", "returning_member", "vip_member", "regular_member", "high_grade_member",
-    "has_new_follow", "has_fansclub", "has_share", "has_like",
-    "viewer_surge", "viewer_drain", "online_milestone", "has_online_viewers",
-})
-TRIGGER_FIELDS = ("when", "priority", "emotion", "target_energy", "cooldown_s", "max_stale_s", "use_llm", "role",
-                  "merge_clause", "merge_with", "directive", "lines", "enabled")
-# 信号 → 命中后"消费"掉的当事事件（防同一事件被两个触发器重复念）
+# 兼容旧引用：平台固定信号。人设的弹幕意图名由 Director.intents 动态补充。
+SIGNALS = PLATFORM_SIGNALS
+# 信号 → 命中后"消费"掉的平台事件（防同一事件被两个触发器重复念）；人设意图信号用 "intent:<name>"。
 _CONSUMES = {"has_big_gift": "gift", "gift_s": "gift", "gift_m": "gift", "gift_l": "gift", "repeat_gift": "gift",
-             "has_new_chat": "chat", "product_question": "question", "purchase_intent": "purchase",
+             "has_new_chat": "chat",
              "has_new_member": "member", "returning_member": "member", "vip_member": "member",
              "regular_member": "member", "high_grade_member": "member", "has_new_follow": "follow",
              "has_fansclub": "fansclub", "has_share": "share"}
@@ -76,12 +69,14 @@ class Trigger:
         return {k: (list(v) if isinstance(v, tuple) else v) for k, v in self.__dict__.items() if k != "cond"}
 
 
-def load_policy(path: str = POLICY_FILE) -> dict:
+def load_policy(path: str) -> dict:
+    """读一份触发器 YAML（人设模板的 triggers.yaml）。保留给测试与脚本使用。"""
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
-def build_triggers(base: dict, overrides: dict | None = None) -> list:
+def build_triggers(base: dict, overrides: dict | None = None, signals=None) -> list:
+    signals = set(PLATFORM_SIGNALS) if signals is None else set(signals)
     specs = {k: dict(v) for k, v in (base or {}).items() if isinstance(v, dict)}
     over = overrides or {}
     for name, ov in over.items():
@@ -90,17 +85,24 @@ def build_triggers(base: dict, overrides: dict | None = None) -> list:
     out = []
     for name, spec in specs.items():
         when = spec.get("when")
-        if when != "always" and when not in SIGNALS:
+        if when != "always" and when not in signals:
             logger.warning(f"触发器 {name!r} 的 when={when!r} 不是已知信号，跳过")
             continue
         cond = (lambda s: True) if when == "always" else (lambda w: (lambda s: bool(s.get(w))))(when)
         mw = spec.get("merge_with") or []
-        t = Trigger(name=name, when=when, priority=int(spec.get("priority", 0)), emotion=spec.get("emotion", "轻松互动"),
-                    target_energy=float(spec.get("target_energy", 0.3)), cooldown_s=float(spec.get("cooldown_s", 0) or 0),
-                    max_stale_s=(float(spec["max_stale_s"]) if spec.get("max_stale_s") else None),
+        try:
+            priority = int(spec.get("priority", 0))
+            energy = float(spec.get("target_energy", 0.3))
+            cooldown = float(spec.get("cooldown_s", 0) or 0)
+            stale = float(spec["max_stale_s"]) if spec.get("max_stale_s") else None
+        except (TypeError, ValueError):
+            logger.warning(f"触发器 {name!r} 的数字字段不合法，跳过")
+            continue
+        t = Trigger(name=name, when=when, priority=priority, emotion=str(spec.get("emotion", "轻松互动")),
+                    target_energy=energy, cooldown_s=cooldown, max_stale_s=stale,
                     use_llm=bool(spec.get("use_llm", False)), role=str(spec.get("role") or ""),
                     merge_clause=spec.get("merge_clause"), merge_with=tuple(mw if isinstance(mw, list) else [mw]),
-                    directive=spec.get("directive", ""), lines=list(spec.get("lines") or []),
+                    directive=str(spec.get("directive", "") or ""), lines=[str(x) for x in (spec.get("lines") or [])],
                     enabled=bool(spec.get("enabled", True)),
                     overridden=tuple(sorted(over.get(name, {}).keys())) if isinstance(over.get(name), dict) else (),
                     cond=cond)
@@ -114,9 +116,10 @@ class Director:
                  context: Callable[[], dict] | None = None):
         self.cfg = cfg
         self.clock = clock
-        self.base_policy = policy if policy is not None else load_policy()
+        self.base_policy = policy if policy is not None else ((cfg.get("persona") or {}).get("triggers") or {})
         self.rng = rng or random.Random()
-        self.context = context or (lambda: {})          # 主持人提供：当前产品名等
+        self.context = context or (lambda: {})          # 主持人提供：当前节目条目名等
+        self.intents: dict = {}
         self.triggers: list = []
         self.reload_triggers()
         self.energy = ENERGY_IDLE
@@ -139,11 +142,33 @@ class Director:
         return self.cfg["interaction"]
 
     def reload_triggers(self) -> None:
-        self.triggers = build_triggers(self.base_policy, self.cfg["interaction"].get("triggers") or {})
+        """从当前人设重读意图与触发器（切换 / 编辑人设后调用）。"""
+        persona = self.cfg.get("persona") or {}
+        all_intents = {i["name"] for i in (persona.get("intents") or []) if i.get("name")}
+        self.intents = {i["name"]: i for i in (persona.get("intents") or [])
+                        if i.get("name") and i.get("enabled", True)}
+        self.base_policy = persona.get("triggers") or {}
+        self.triggers = build_triggers(self.base_policy, None, PLATFORM_SIGNALS | all_intents)
 
     def apply_settings(self, settings, changed: set) -> None:
-        if "interaction.triggers" in changed:
-            self.reload_triggers()
+        pass
+
+    def reset(self) -> None:
+        """切换人设：清掉所有跨人设的决策状态（能量、冷却、消费标记、回踩、榜一、破整锁存）。"""
+        self.energy = ENERGY_IDLE
+        self.last_fired = {}
+        self.last_spoke_ts = -1e9
+        self._recent_lines = deque(maxlen=30)
+        self._handled = {}
+        self._last_like_user = None
+        self._last_gift_user = ""
+        self._last_gift_ts = -1e9
+        self._followup = None
+        self._gift_king = None
+        self._pending_dethrone = None
+        self._max_online_ms = None
+        self._pending_milestone = None
+        self.reload_triggers()
 
     def trigger(self, name: str) -> Trigger | None:
         return next((t for t in self.triggers if t.name == name), None)
@@ -223,7 +248,7 @@ class Director:
         if self._pending_dethrone and s.ts - self._pending_dethrone["ts"] > 30:
             self._pending_dethrone = None
 
-        chat, q, buy = s.recent_chat, s.recent_question, s.recent_purchase
+        chat = s.recent_chat
         member = s.recent_member
         has_member = self._fresh("member", member)
         mem = (member or {}).get("memory") or {}
@@ -249,13 +274,11 @@ class Director:
         if self._pending_milestone and s.ts - self._pending_milestone["ts"] > 60:
             self._pending_milestone = None
 
-        return {
+        sig = {
             "gift": g, "has_big_gift": has_big, "gift_s": gift_s, "gift_m": gift_m, "gift_l": gift_l, "repeat_gift": repeat,
             "gift_followup": followup, "followup_gift": followup_gift,
             "gift_king_dethroned": self._pending_dethrone is not None, "gift_king": self._pending_dethrone,
             "chat": chat, "has_new_chat": self._fresh("chat", chat),
-            "question": q, "product_question": self._fresh("question", q),
-            "purchase": buy, "purchase_intent": self._fresh("purchase", buy),
             "member": member, "has_new_member": has_member, "returning_member": returning, "vip_member": vip,
             "regular_member": regular, "high_grade_member": high_grade,
             "follow": s.recent_follow, "has_new_follow": self._fresh("follow", s.recent_follow),
@@ -267,6 +290,14 @@ class Director:
             "milestone": (self._pending_milestone or {}).get("online"),
             "online_viewers": list(s.online_viewers), "has_online_viewers": bool(s.online_viewers),
         }
+        # 人设自己的弹幕意图：每个意图名都是信号，值是"这条还没被消费过"。
+        records = {}
+        for name in self.intents:
+            rec = s.recent_by_intent.get(name)
+            records[name] = rec
+            sig[name] = self._fresh("intent:" + name, rec)
+        sig["_intent_records"] = records
+        return sig
 
     # ------------------------------------------------------------------ 命中副作用
     def _apply_effects(self, trg: Trigger, sig: dict, now: float) -> None:
@@ -276,6 +307,10 @@ class Director:
             rec = sig.get(kind)
             if rec:
                 self._handled[kind] = rec.get("msg_id") or rec.get("ts")
+        elif trg.when in self.intents:
+            rec = (sig.get("_intent_records") or {}).get(trg.when)
+            if rec:
+                self._handled["intent:" + trg.when] = rec.get("msg_id") or rec.get("ts")
         if kind == "gift" and sig.get("gift"):
             g = sig["gift"]
             self._last_gift_user = g.get("user_id") or g.get("nickname") or ""
@@ -314,6 +349,8 @@ class Director:
             return sig.get(kind)
         if trg.when == "gift_followup":
             return sig.get("followup_gift")
+        if trg.when in self.intents:
+            return (sig.get("_intent_records") or {}).get(trg.when)
         return None
 
     def _situation(self, s: RoomSnapshot, sig: dict, trg: Trigger, fmt: dict) -> dict:
@@ -330,9 +367,12 @@ class Director:
                 sit["gift"] = {"name": g.get("gift"), "count": g.get("count"), "total_diamonds": g.get("total")}
         if trg.when == "has_new_chat" and sig.get("chat"):
             sit["chat"] = sig["chat"].get("content")
-        if trg.when in ("product_question", "purchase_intent"):
-            rec = sig.get("question" if trg.when == "product_question" else "purchase") or {}
+        if trg.when in self.intents:
+            rec = (sig.get("_intent_records") or {}).get(trg.when) or {}
+            sit["chat"] = rec.get("content")
             sit["question"] = rec.get("content")
+            sit["intent"] = trg.when
+            sit["intent_label"] = (self.intents.get(trg.when) or {}).get("label") or trg.when
         if trg.when == "has_new_member" or trg.when.endswith("_member"):
             mem = (sig.get("member") or {}).get("memory") or {}
             if mem:
@@ -346,7 +386,7 @@ class Director:
     def _big(self) -> dict:
         return self.cfg["persona"].get("big_honorific") or {}
 
-    def _fmt(self, sig: dict) -> _SafeDict:
+    def _fmt(self, sig: dict, trg: Trigger | None = None) -> _SafeDict:
         sfx, big = self._suffix(), self._big()
 
         def sn(rec):
@@ -363,15 +403,25 @@ class Director:
         gk = sig.get("gift_king") or {}
         gk_new, gk_prev = gk.get("new") or {}, gk.get("prev") or {}
         viewers = sig.get("online_viewers") or []
-        q = sig.get("question") or sig.get("purchase") or {}
+        actor = self._actor(trg, sig) if trg is not None else None
+        is_intent = trg is not None and trg.when in self.intents
+        q = actor if is_intent else None
+        if not q:
+            q = sig.get("chat") or {}
+        chat_rec = actor if is_intent else sig.get("chat")
         ctx = self.context() or {}
-        anchor = self.cfg["persona"].get("anchor_name") or "主播"
-        shop = self.cfg["persona"].get("shop_name") or ""
+        persona = self.cfg.get("persona") or {}
+        prog = persona.get("program") or {}
+        anchor = persona.get("anchor_name") or "主播"
+        shop = persona.get("shop_name") or ""
+        product = ctx.get("product_name") or prog.get("default_item_text") or "今天的内容"
         mlv = int(member.get("wealth_level") or 0)
         glv = int(g.get("wealth_level") or 0)
+        intent = trg.when if (trg is not None and trg.when in self.intents) else ""
         return _SafeDict({
             "anchor": anchor, "shop": shop, "shop_or_anchor": shop or anchor,
-            "product": ctx.get("product_name") or "今天的好物",
+            "product": product, "item": product, "item_label": prog.get("item_label") or "节目",
+            "intent": intent, "intent_label": (self.intents.get(intent) or {}).get("label", "") if intent else "",
             "online": sig.get("online", 0), "online_delta": abs(int(sig.get("online_delta", 0))),
             "milestone": sig.get("milestone") or sig.get("online", 0),
             "gift_user": sn(g), "gift_honor": hon(g), "gift_name": g.get("gift", "礼物"), "gift_count": g.get("count", 1),
@@ -381,8 +431,8 @@ class Director:
             "member_gift_value": mem.get("gift_value", 0),
             "follow_user": sn(sig.get("follow")), "follow_honor": hon(sig.get("follow")),
             "fans_user": sn(sig.get("fansclub")), "share_user": sn(sig.get("share")),
-            "chat_user": sn(sig.get("chat")), "chat_honor": hon(sig.get("chat")),
-            "chat_content": (sig.get("chat") or {}).get("content", ""),
+            "chat_user": sn(chat_rec), "chat_honor": hon(chat_rec),
+            "chat_content": (chat_rec or {}).get("content", ""),
             "asker": sn(q), "asker_honor": hon(q), "question": q.get("content", ""),
             "like_user": sn(sig.get("liker")), "like_honor": hon(sig.get("liker")),
             "like_count": (sig.get("liker") or {}).get("count", 0),
@@ -409,23 +459,25 @@ class Director:
 
     def _cue(self, s, sig, trg: Trigger, speed: float, text: str, directive: str, reason: str, sit: dict) -> Cue:
         actor = self._actor(trg, sig) or {}
-        q = ""
-        if trg.when in ("product_question", "purchase_intent"):
-            q = actor.get("content", "")
+        intent = trg.when if trg.when in self.intents else ""
+        spec = self.intents.get(intent) or {}
+        q = actor.get("content", "") if intent else ""
         return Cue(event=trg.name, priority=trg.priority, kind="interaction", emotion=trg.emotion,
                    energy=round(self.energy, 2), speed=speed, directive=directive, situation=sit, fallback_text=text,
                    reason=reason, use_llm=trg.use_llm, user=actor.get("profile"), question=q,
+                   intent=intent, qa=spec.get("qa") or "off", first_come=bool(spec.get("first_come")),
+                   search_suffix=spec.get("search_suffix") or "",
                    max_stale_s=trg.max_stale_s, source=self._source(trg, sig), created_at=self.clock.now())
 
     def _single(self, s, sig, trg: Trigger, speed: float) -> Cue:
-        fmt = self._fmt(sig)
+        fmt = self._fmt(sig, trg)
         text = self._pick_line(trg, fmt)
         directive = str(trg.directive or "").format_map(fmt)
         return self._cue(s, sig, trg, speed, text, directive, self._reason(trg, sig), self._situation(s, sig, trg, fmt))
 
     def _merged(self, s, sig, fired: Trigger, partner: Trigger, speed: float) -> Cue | None:
         who, what = (fired, partner) if fired.role == "who" else (partner, fired)
-        fmt = self._fmt(sig)
+        fmt = self._fmt(sig, who)
 
         def clause(c):
             if isinstance(c, (list, tuple)):
@@ -458,10 +510,10 @@ class Director:
         if w == "gift_king_dethroned":
             d = sig.get("gift_king") or {}
             return f"礼物榜榜首易主：『{nm(d.get('new'))}』（{(d.get('new') or {}).get('value')}钻）超过『{nm(d.get('prev'))}』"
-        if w == "product_question":
-            return f"『{nm(sig.get('question'))}』问产品：{(sig.get('question') or {}).get('content')}"
-        if w == "purchase_intent":
-            return f"『{nm(sig.get('purchase'))}』想买：{(sig.get('purchase') or {}).get('content')}"
+        if w in self.intents:
+            rec = (sig.get("_intent_records") or {}).get(w) or {}
+            label = (self.intents.get(w) or {}).get("label") or w
+            return f"『{nm(rec)}』{label}：{rec.get('content', '')}"
         if w == "has_new_chat":
             return f"『{nm(sig.get('chat'))}』发弹幕：{(sig.get('chat') or {}).get('content')}"
         if w in ("has_new_member", "returning_member", "vip_member", "regular_member", "high_grade_member"):

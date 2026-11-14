@@ -58,6 +58,7 @@ if (params.get('view') === '1') {
 function startApp() {
   const PAGES = {
     console: () => import('./pages/console.js'),
+    personas: () => import('./pages/personas.js'),
     danmaku: () => import('./pages/danmaku.js'),
     products: () => import('./pages/products.js'),
     media: () => import('./pages/media.js'),

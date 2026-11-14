@@ -4,7 +4,8 @@
 - 本场回头客：本场出现过的 user_id 再进场 → returning；
 - 本场礼物榜：按人累计结算后的礼物钻石数 → gift_top（榜首易主由导演判断）；
 - 在线人数：窗口内最新值与变化量（猛涨/下滑/破整）；贡献榜名单（冷场点名）；
-- 弹幕按意图分流：产品提问、购买意向、闲聊分别排队（提问保鲜更久，不会被闲聊挤掉）；垃圾 / 无意义刷屏丢弃。
+- 弹幕按当前人设的意图分流：每个 intents[].name 一个队列（窗口 / 先来先答由模板决定），闲聊单独排队；
+  垃圾 / 无意义刷屏丢弃。切换人设时 configure()/reset() 重建队列。
 """
 from __future__ import annotations
 
@@ -22,8 +23,9 @@ class RoomSnapshot:
     ts: float
     last_gift: dict | None = None
     recent_chat: dict | None = None
-    recent_question: dict | None = None
-    recent_purchase: dict | None = None
+    recent_question: dict | None = None       # 兼容旧的 product_question 人设
+    recent_purchase: dict | None = None       # 兼容旧的 purchase_intent 人设
+    recent_by_intent: dict = field(default_factory=dict)
     recent_member: dict | None = None
     recent_follow: dict | None = None
     recent_fansclub: dict | None = None
@@ -53,16 +55,40 @@ class RoomState:
         self.clock = clock
         self.queue_max = queue_max
         self._lock = threading.Lock()
-        self._q = {k: deque() for k in ("gift", "chat", "question", "purchase", "member", "follow", "fansclub", "share",
-                                         "like")}
+        self._q = {k: deque() for k in ("gift", "chat", "member", "follow", "fansclub", "share", "like")}
+        self.intents: dict = {}
         self._online: deque = deque()
         self._last_rank: tuple | None = None
         self._seen_members: set = set()
         self._session_gifts: dict = {}
         self.counters: dict = {}
+        self.configure()
 
     def win(self, name: str) -> float:
         return float(self.cfg["interaction"]["window"][name])
+
+    def configure(self) -> None:
+        """按当前人设的 intents 重建意图队列（切换 / 编辑人设后调用）。"""
+        persona = self.cfg.get("persona") or {}
+        with self._lock:
+            self.intents = {i["name"]: i for i in (persona.get("intents") or [])
+                            if i.get("name") and i.get("enabled", True)}
+            want = {"intent:" + n for n in self.intents}
+            for key in [k for k in self._q if k.startswith("intent:") and k not in want]:
+                self._q.pop(key, None)
+            for key in want:
+                self._q.setdefault(key, deque())
+
+    def reset(self) -> None:
+        """切换人设：清空所有事件队列与本场统计，避免旧人设的弹幕被新触发器接走。"""
+        with self._lock:
+            for q in self._q.values():
+                q.clear()
+            self._online.clear()
+            self._last_rank = None
+            self._seen_members.clear()
+            self._session_gifts.clear()
+            self.counters.clear()
 
     # ------------------------------------------------------------------ 事件入口
     def on_event(self, ev: LiveEvent) -> dict | None:
@@ -87,11 +113,9 @@ class RoomState:
                 content = str(ev.data.get("content") or "")
                 it = self.intent.classify(content) if not ev.data.get("is_emoji") else I.Intent(I.NOISE)
                 info = {"intent": it.to_dict()}
-                rec = {**_who(ev), "content": content, "intent": it.kind}
-                if it.kind == I.PRODUCT_QUESTION:
-                    self._q["question"].append(rec)
-                elif it.kind == I.PURCHASE_INTENT:
-                    self._q["purchase"].append(rec)
+                rec = {**_who(ev), "content": content, "intent": it.kind, "intent_label": it.label}
+                if it.kind in self.intents:
+                    self._q.setdefault("intent:" + it.kind, deque()).append(rec)
                 elif it.kind == I.CHITCHAT:
                     self._q["chat"].append(rec)
             elif t == "like":
@@ -142,9 +166,15 @@ class RoomState:
 
             snap = RoomSnapshot(ts=now,
                                 last_gift=pick("gift", "gift_s"), recent_chat=pick("chat", "chat_s"),
-                                recent_question=first("question", "question_s"), recent_purchase=pick("purchase", "question_s"),
                                 recent_member=pick("member", "member_s"), recent_follow=pick("follow", "follow_s"),
                                 recent_fansclub=pick("fansclub", "follow_s"), recent_share=pick("share", "follow_s"))
+            for name, spec in self.intents.items():
+                window = spec.get("window") or "question_s"
+                rec = first("intent:" + name, window) if spec.get("first_come") else pick("intent:" + name, window)
+                if rec:
+                    snap.recent_by_intent[name] = rec
+            snap.recent_question = snap.recent_by_intent.get("product_question")
+            snap.recent_purchase = snap.recent_by_intent.get("purchase_intent")
             likes = self._q["like"]
             cutoff = now - self.win("like_s")
             while likes and likes[0]["ts"] < cutoff:
@@ -168,11 +198,18 @@ class RoomState:
                 snap.gift_top = dict(max(self._session_gifts.values(), key=lambda r: r["value"]))
         return snap
 
-    def consume_question(self, msg_id: str) -> None:
-        """提问被回答后从队列移除（先来先答，答完下一条）。"""
+    def consume_intent(self, name: str, msg_id: str) -> None:
+        """这条弹幕被回应后从对应意图队列移除（先来先答，答完下一条）。"""
+        key = "intent:" + name
         with self._lock:
-            q = self._q["question"]
-            self._q["question"] = deque(r for r in q if r.get("msg_id") != msg_id)
+            q = self._q.get(key)
+            if q is None:
+                return
+            self._q[key] = deque(r for r in q if r.get("msg_id") != msg_id)
+
+    def consume_question(self, msg_id: str) -> None:
+        """兼容旧调用：product_question 意图。"""
+        self.consume_intent("product_question", msg_id)
 
     def session_gift_rank(self, n: int = 10) -> list:
         with self._lock:

@@ -20,14 +20,16 @@ export async function mount(el, app) {
   const playingMeta = h('div', { class: 'hint' });
   const nextLine = h('div', { class: 'hint' });
   const pauseIaBtn = h('button', { type: 'button', class: 'small' }, '暂停互动');
-  const pauseScBtn = h('button', { type: 'button', class: 'small' }, '暂停讲品');
+  const pauseScBtn = h('button', { type: 'button', class: 'small' }, '暂停讲解');
   const speakText = h('textarea', { rows: 3, placeholder: '输入要说的话，回车发送（Shift+回车换行）' });
   const voiceSel = h('select', { title: '音色' });
   const interruptFirst = h('input', { type: 'checkbox' });
   const speakBtn = h('button', { class: 'primary', type: 'button' }, '说');
   const interruptBtn = h('button', { type: 'button', class: 'small' }, '打断');
   const statsBox = h('div', { class: 'row num' });
-  const productSel = h('select', { title: '当前讲解的产品' });
+  let itemLabel = '节目';
+  const productSel = h('select', { title: '当前讲解的条目' });
+  const productHead = cardHead('当前条目', h('a', { href: '#/products' }, '节目与知识库 →'));
   const prevBtn = h('button', { type: 'button', class: 'small' }, '上一个');
   const nextBtn = h('button', { type: 'button', class: 'small' }, '下一个');
   const skipBtn = h('button', { type: 'button', class: 'small' }, '下一段');
@@ -57,8 +59,7 @@ export async function mount(el, app) {
         card('人工插话', speakText,
           h('div', { class: 'row' }, voiceSel, h('label', { class: 'inline' }, interruptFirst, '先打断'),
             h('span', { class: 'grow' }), speakBtn)),
-        card(cardHead('当前产品', h('a', { href: '#/products' }, '产品与知识库 →')),
-          h('div', { class: 'row' }, productSel, prevBtn, nextBtn, skipBtn, videoBtn), scriptLine),
+        card(productHead, h('div', { class: 'row' }, productSel, prevBtn, nextBtn, skipBtn, videoBtn), scriptLine),
         card(cardHead('实时数据', h('a', { href: '#/danmaku' }, '弹幕互动 →')), statsBox),
         card('会话事件', log.el))),
     card(cardHead('弹幕流（最近 50 条，完整版在「弹幕互动」页）'),
@@ -113,6 +114,11 @@ export async function mount(el, app) {
   on(app.events, 'session', async () => {
     if (player.connected) await player.connect(url());
   });
+  on(app.events, 'topic:persona.changed', () => {
+    loadProducts();
+    refreshHost();
+    refreshScene();
+  });
   latency.oninput = () => {
     player.setLatency(parseFloat(latency.value));
     latencyVal.textContent = `${parseFloat(latency.value).toFixed(2)}s`;
@@ -155,7 +161,7 @@ export async function mount(el, app) {
     hostSt = st;
     pauseIaBtn.textContent = st.pause_interaction ? '恢复互动' : '暂停互动';
     pauseIaBtn.classList.toggle('danger', st.pause_interaction);
-    pauseScBtn.textContent = st.pause_script ? '恢复讲品' : '暂停讲品';
+    pauseScBtn.textContent = st.pause_script ? '恢复讲解' : '暂停讲解';
     pauseScBtn.classList.toggle('danger', st.pause_script);
     const cur = st.current;
     if (cur) {
@@ -165,12 +171,17 @@ export async function mount(el, app) {
     } else {
       const s = app.session();
       playing.textContent = (s && s.playing_text) || '（空闲）';
-      playingMeta.textContent = st.enabled ? (st.session_ok ? '主持人待命' : `主持人等待会话「${st.session_id}」`) : '主持人已关闭（直播间设置 → 主播人设）';
+      playingMeta.textContent = st.enabled ? (st.session_ok ? '主持人待命' : `主持人等待会话「${st.session_id}」`) : '主持人已关闭（直播间设置 → 主持人）';
     }
     const q = st.queue || [];
     const sc = st.script;
+    if (sc && sc.item_label) {
+      itemLabel = sc.item_label;
+      productHead.querySelector('h3').textContent = `当前${itemLabel}`;
+      productSel.title = `当前讲解的${itemLabel}`;
+    }
     const scriptNext = !q[0] && sc && st.script_active && !(cur && cur.kind === 'product')
-      ? h('span', {}, ` · 下一句：讲品「${sc.product_name}」第 ${sc.segment}/${sc.segments} 段`) : '';
+      ? h('span', {}, ` · 下一句：讲解「${sc.product_name}」第 ${sc.segment}/${sc.segments} 段`) : '';
     nextLine.replaceChildren(h('span', {}, `队列 ${st.queue_size} 条`), q[0] ? h('span', {}, ' · 下一句：', h('code', {}, q[0].event), ` ${q[0].text || ''}`) : scriptNext);
     renderScript(st);
   }
@@ -188,7 +199,7 @@ export async function mount(el, app) {
     skipBtn.disabled = !st.script_active;
     if (sc.inactive_reason) scriptLine.textContent = sc.inactive_reason;
     else {
-      scriptLine.textContent = `${st.pause_script ? '讲品已暂停 · ' : ''}${sc.speaking ? '正在讲' : '下一段'}第 ${sc.segment}/${sc.segments} 段 · 已讲 ${Math.round(sc.elapsed_s)}s / ${Math.round(sc.duration_s)}s 后换下一个产品`
+      scriptLine.textContent = `${st.pause_script ? '讲解已暂停 · ' : ''}${sc.speaking ? '正在讲' : '下一段'}第 ${sc.segment}/${sc.segments} 段 · 已讲 ${Math.round(sc.elapsed_s)}s / ${Math.round(sc.duration_s)}s 后换下一个${itemLabel}`
         + (sc.next_text ? ` · ${sc.next_text}…` : '');
     }
   }
@@ -196,8 +207,11 @@ export async function mount(el, app) {
   function loadProducts() {
     if (productsLoading) return productsLoading;
     productsLoading = app.api.get('/api/products').then((r) => {
+      itemLabel = r.program?.item_label || '节目';
+      productHead.querySelector('h3').textContent = `当前${itemLabel}`;
+      productSel.title = `当前讲解的${itemLabel}`;
       productSel.replaceChildren(...r.items.map((p) => new Option(`${p.name}${p.enabled ? '' : '（已停用）'}${p.playable ? '' : '（无确认稿）'}`, p.id)));
-      if (!r.items.length) productSel.append(new Option('还没有产品', ''));
+      if (!r.items.length) productSel.append(new Option(`还没有${itemLabel}`, ''));
       if (r.active_id) productSel.value = r.active_id;
     }).catch(() => {}).finally(() => setTimeout(() => (productsLoading = null), 3000));
     return productsLoading;
@@ -210,7 +224,7 @@ export async function mount(el, app) {
     const pid = productSel.value;
     const p = pid ? await app.api.get(`/api/products/${pid}`) : null;
     if (!p || !p.video_ids.length) {
-      toast('当前产品还没有关联视频（产品与知识库 → 视频）', 'warn');
+      toast(`当前${itemLabel}还没有关联视频（节目与知识库 → 视频）`, 'warn');
       return;
     }
     await app.api.post(`/api/sessions/${encodeURIComponent(app.sid)}/scene/video`, { media_id: p.video_ids[0] });
@@ -218,7 +232,7 @@ export async function mount(el, app) {
 
   // ---- 场景：预览（iframe 嵌 /scene?preview=1，静音，不和上面的播放器重复出声）与正在播放 ----
   const MODE = { full: '全屏', pip: '画中画', split: '分屏' };
-  const LAYOUT = { dh_full: '数字人', dh_with_card: '数字人 + 产品卡片', video_full: '视频全屏', video_pip: '视频 + 数字人画中画', split: '上视频下数字人' };
+  const LAYOUT = { dh_full: '数字人', dh_with_card: '数字人 + 条目卡片', video_full: '视频全屏', video_pip: '视频 + 数字人画中画', split: '上视频下数字人' };
   function renderScene(sc) {
     const v = sc.video;
     stopVideoBtn.hidden = !v;

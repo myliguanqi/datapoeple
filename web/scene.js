@@ -81,9 +81,16 @@ function apply(sc) {
     card.style.height = 'auto';
     card.style.maxHeight = `${cardRect.h}px`;
     card.classList.toggle('compact', sc.card.style === 'compact' || lay === 'split');
+    const mode = sc.card.mode || 'product';              // product = 完整条目；title = 只显示名称；off 由服务端关掉卡片
+    const price = card.querySelector('.price');
+    const list = card.querySelector('ul');
     card.querySelector('.name').textContent = p.name;
-    card.querySelector('.price').textContent = p.price_text || '';
-    card.querySelector('ul').replaceChildren(...(p.selling_points || []).map((t) => Object.assign(document.createElement('li'), { textContent: t })));
+    price.textContent = p.price_text || '';
+    price.hidden = mode !== 'product' || !p.price_text;
+    price.style.display = price.hidden ? 'none' : '';
+    list.replaceChildren(...(p.selling_points || []).map((t) => Object.assign(document.createElement('li'), { textContent: t })));
+    list.hidden = mode !== 'product' || !(p.selling_points || []).length;
+    list.style.display = list.hidden ? 'none' : '';
   }
   subtitleOn = sc.subtitle.enabled;
   subtitle.hidden = !subtitleOn;

@@ -63,7 +63,10 @@ def _patch(body: ProductBody) -> dict:
 async def list_products(request: Request):
     ctx = get_ctx(request)
     ctx.script.resolve()
+    persona = ctx.persona.active()
     return {"items": [describe(ctx, p) for p in ctx.products.list()], "active_id": ctx.script.product_id,
+            "program": persona.get("program") or {}, "persona": {"id": persona.get("id"), "name": persona.get("name"),
+                                                               "anchor_name": persona.get("anchor_name")},
             "script": ctx.script.status()}
 
 
